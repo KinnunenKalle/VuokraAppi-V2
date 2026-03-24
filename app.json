@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "VuokraAppi",
+    "slug": "vuokraappi",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#f8fafc"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vuokraappi.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#f8fafc"
+      },
+      "package": "com.vuokraappi.app"
+    },
+    "scheme": "vuokraappi"
+  }
+}
