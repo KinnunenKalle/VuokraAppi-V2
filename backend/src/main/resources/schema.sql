@@ -85,6 +85,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_apartment_images_one_primary
     ON apartment_images(apartment_id)
     WHERE is_primary = TRUE;
 
+-- AI-generoitu asuntoesittely
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS listing_text TEXT;
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS rent_suggestion_min INTEGER;
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS rent_suggestion_max INTEGER;
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS rent_suggestion_recommended INTEGER;
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS rent_suggestion_reasoning TEXT;
+ALTER TABLE apartments ADD COLUMN IF NOT EXISTS listing_generated_at TIMESTAMP;
+
 -- Vahva tunnistautuminen: poistetaan hetu users-taulusta jos se on olemassa
 ALTER TABLE users DROP COLUMN IF EXISTS personal_identity_code;
 

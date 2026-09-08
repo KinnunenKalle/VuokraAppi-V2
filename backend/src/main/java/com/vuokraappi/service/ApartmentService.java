@@ -159,6 +159,12 @@ public class ApartmentService {
         dto.setLatitude(apartment.getLatitude());
         dto.setRent(apartment.getRent());
         dto.setOwnerIdentityVerified(owner.getIdentityVerified());
+        dto.setListingText(apartment.getListingText());
+        dto.setRentSuggestionMin(apartment.getRentSuggestionMin());
+        dto.setRentSuggestionMax(apartment.getRentSuggestionMax());
+        dto.setRentSuggestionRecommended(apartment.getRentSuggestionRecommended());
+        dto.setRentSuggestionReasoning(apartment.getRentSuggestionReasoning());
+        dto.setListingGeneratedAt(apartment.getListingGeneratedAt());
         return dto;
     }
 }

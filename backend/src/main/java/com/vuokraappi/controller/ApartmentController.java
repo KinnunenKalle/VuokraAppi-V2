@@ -4,8 +4,11 @@ import com.vuokraappi.config.UserPrincipal;
 import com.vuokraappi.dto.ApartmentRequest;
 import com.vuokraappi.dto.ApartmentResponse;
 import com.vuokraappi.dto.ApartmentSearchCriteria;
+import com.vuokraappi.dto.listing.GenerateListingResponse;
+import com.vuokraappi.dto.listing.SaveListingRequest;
 import com.vuokraappi.entity.User;
 import com.vuokraappi.service.ApartmentService;
+import com.vuokraappi.service.ListingService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -22,8 +25,9 @@ import java.util.UUID;
 @RequestMapping("/v1/apartments")
 @RequiredArgsConstructor
 public class ApartmentController {
-    
+
     private final ApartmentService apartmentService;
+    private final ListingService listingService;
     
     @GetMapping
     public Mono<ResponseEntity<List<ApartmentResponse>>> getAllApartments() {
@@ -96,5 +100,14 @@ public class ApartmentController {
             @AuthenticationPrincipal UserPrincipal principal) {
         return Mono.fromRunnable(() -> apartmentService.deleteApartment(id, principal.getUser()))
                 .then(Mono.just(ResponseEntity.noContent().<Void>build()));
+    }
+
+    @PostMapping("/{apartmentId}/listing/generate")
+    public Mono<ResponseEntity<GenerateListingResponse>> generateListing(
+            @PathVariable UUID apartmentId,
+            @Valid @RequestBody SaveListingRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return Mono.fromCallable(() -> listingService.generateAndSave(apartmentId, request, principal.getUser()))
+                .map(result -> ResponseEntity.status(HttpStatus.CREATED).body(result));
     }
 }

@@ -8,6 +8,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import lombok.ToString;
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -67,4 +68,22 @@ public class Apartment {
     @OrderBy("sortOrder ASC")
     @ToString.Exclude
     private List<ApartmentImage> images = new ArrayList<>();
+
+    @Column(name = "listing_text", columnDefinition = "TEXT")
+    private String listingText;
+
+    @Column(name = "rent_suggestion_min")
+    private Integer rentSuggestionMin;
+
+    @Column(name = "rent_suggestion_max")
+    private Integer rentSuggestionMax;
+
+    @Column(name = "rent_suggestion_recommended")
+    private Integer rentSuggestionRecommended;
+
+    @Column(name = "rent_suggestion_reasoning", columnDefinition = "TEXT")
+    private String rentSuggestionReasoning;
+
+    @Column(name = "listing_generated_at")
+    private LocalDateTime listingGeneratedAt;
 }
