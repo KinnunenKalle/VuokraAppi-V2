@@ -287,6 +287,12 @@ const ApartmentDetailModal = ({ apartment, onClose }) => {
             )}
           </View>
 
+          {apartment.listingText && (
+            <View style={styles.listingBox}>
+              <Text style={styles.listingText}>{apartment.listingText}</Text>
+            </View>
+          )}
+
           {apartment.ownerName && (
             <View style={styles.ownerBox}>
               <Feather name="user" size={16} color={Colors.text.muted} />
@@ -755,6 +761,18 @@ const styles = StyleSheet.create({
   detailStatText: {
     fontSize: Typography.size.sm,
     color: Colors.text.muted,
+  },
+  listingBox: {
+    marginTop: Spacing.md,
+    marginBottom: Spacing.md,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border ?? '#E5E7EB',
+  },
+  listingText: {
+    fontSize: Typography.size.sm,
+    color: Colors.text.primary,
+    lineHeight: 22,
   },
   ownerBox: {
     flexDirection: 'row',

@@ -12,13 +12,20 @@ export const userService = {
    * @returns {Promise<Object>} Käyttäjäobjekti
    */
   async register(userId, role) {
+    if (!userId) throw new Error('userId on pakollinen');
+    if (!['tenant', 'landlord'].includes(role?.toLowerCase())) {
+      throw new Error("role on oltava 'tenant' tai 'landlord'");
+    }
+
     return await apiClient.post(
       API_ENDPOINTS.USERS,
       {
         id: userId,
         role: role.toLowerCase(), // API odottaa lowercase
       },
-      { includeAuth: true } // Rekisteröinnissä ei vielä tokenia
+      // OpenAPI-spec ei vaadi tälle endpointille authia, mutta APIM-gateway
+      // vaatii JWT:n joka tapauksessa kaikilla reiteillä spekistä riippumatta.
+      { includeAuth: true }
     );
   },
 
@@ -29,6 +36,7 @@ export const userService = {
    * @returns {Promise<Object>} Päivitetty käyttäjä
    */
   async updateProfile(userId, userData) {
+    if (!userId) throw new Error('userId on pakollinen');
     return await apiClient.patch(
       API_ENDPOINTS.USER_BY_ID(userId),
       userData
@@ -41,6 +49,7 @@ export const userService = {
    * @returns {Promise<Object>} Käyttäjäobjekti
    */
   async getProfile(userId) {
+    if (!userId) throw new Error('userId on pakollinen');
     return await apiClient.get(API_ENDPOINTS.USER_BY_ID(userId));
   },
 
@@ -50,6 +59,7 @@ export const userService = {
    * @returns {Promise<Array>} Lista asunnoista
    */
   async getUserApartments(userId) {
+    if (!userId) throw new Error('userId on pakollinen');
     return await apiClient.get(API_ENDPOINTS.USER_APARTMENTS(userId));
   },
 
@@ -59,6 +69,7 @@ export const userService = {
    * @returns {Promise<void>}
    */
   async deleteUser(userId) {
+    if (!userId) throw new Error('userId on pakollinen');
     return await apiClient.delete(API_ENDPOINTS.USER_BY_ID(userId));
   },
 };

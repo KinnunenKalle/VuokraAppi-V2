@@ -27,8 +27,10 @@ const apartmentService = {
   deleteApartment: (id) =>
     apiClient.delete(`/v1/apartments/${id}`),
 
-  generateListing: (data) =>
-    apiClient.post('/listings/v1/generate', data),
+  // Generoi AI-ilmoitus JA tallentaa sen kohteeseen (listingText, rentSuggestion*).
+  // Vaatii että kohde on jo luotu (apartmentId).
+  generateListing: (apartmentId, data) =>
+    apiClient.post(`/v1/apartments/${apartmentId}/listing/generate`, data),
 
   getImages: (apartmentId) =>
     apiClient.get(`/v1/apartments/${apartmentId}/images`),

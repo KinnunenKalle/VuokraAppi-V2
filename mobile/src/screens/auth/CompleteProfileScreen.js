@@ -26,7 +26,7 @@ import { STORAGE_KEYS } from '../../constants';
  * Vain etunimi näkyy muille
  */
 const CompleteProfileScreen = ({ route, navigation }) => {
-  const { role } = route.params;
+  const role = route.params?.role;
   const { user, setUserRole } = useAuth();
   
   const [loading, setLoading] = useState(false);
@@ -162,11 +162,16 @@ const CompleteProfileScreen = ({ route, navigation }) => {
       return;
     }
 
+    if (!user?.id || !role) {
+      Alert.alert('Virhe', 'Käyttäjätietoja puuttuu. Kirjaudu sisään uudelleen.');
+      return;
+    }
+
     setLoading(true);
 
     try {
       // Muunna päivämäärä ISO muotoon backendille
-      const isoDate = `${formData.birthYear}-${formData.birthMonth.padStart(2, '0')}-${formData.birthDay.padStart(2, '0')}`; // YYYY-MM-DD
+      const isoDate = `${formData.birthYear}-${String(formData.birthMonth).padStart(2, '0')}-${String(formData.birthDay).padStart(2, '0')}`; // YYYY-MM-DD
 
       const profileData = {
         firstName: userInfo.firstName,
@@ -195,13 +200,13 @@ const CompleteProfileScreen = ({ route, navigation }) => {
 
       console.log('✅ Profile saved locally, role set to:', role);
 
-      // Navigointi tapahtuu automaattisesti kun AuthContext päivittyy
-      // AppNavigator näkee että user.role on nyt asetettu ja näyttää oikean home screenin
+      // AuthContext päivittyy jo setUserRole-kutsusta, joten AppNavigator on
+      // vaihtanut näkymän taustalla ennen kuin tämä Alert edes ehtii näkyä.
+      // Alert vaatii käyttäjän oman "OK"-painalluksen sulkeutuakseen.
       Alert.alert(
         'Tervetuloa!',
         `Hei ${userInfo.firstName}! 🎉`
       );
-      // Alert sulkeutuu automaattisesti ja navigointi tapahtuu
     } catch (error) {
       console.error('❌ Profile submit error:', error);
       Alert.alert('Virhe', 'Profiilin tallennus epäonnistui: ' + error.message);

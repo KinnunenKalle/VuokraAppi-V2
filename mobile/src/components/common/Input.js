@@ -22,6 +22,8 @@ const Input = forwardRef(({
   required = false,
   style,
   inputStyle,
+  onFocus,
+  onBlur,
   ...props
 }, ref) => {
   const [isFocused, setIsFocused] = useState(false);
@@ -56,8 +58,8 @@ const Input = forwardRef(({
           onChangeText={onChangeText}
           placeholder={placeholder}
           placeholderTextColor={Colors.text.light}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          onFocus={(e) => { setIsFocused(true); onFocus?.(e); }}
+          onBlur={(e) => { setIsFocused(false); onBlur?.(e); }}
           {...props}
         />
       </View>

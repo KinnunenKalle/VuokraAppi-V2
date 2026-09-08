@@ -12,6 +12,7 @@ import {
   FlatList,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -19,10 +20,6 @@ import Input from '../../components/common/Input';
 import Button from '../../components/common/Button';
 import { Colors, Typography, Spacing, CommonStyles } from '../../theme';
 import apartmentService from '../../services/apartmentService';
-
-// AI-agentti palauttaa joskus JSON:in markdown-koodilohkossa (```json ... ```)
-const stripCodeFence = (str) =>
-  str.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
 
 const INITIAL_FORM = {
   streetAddress: '',
@@ -96,7 +93,22 @@ const AddApartmentScreen = ({ navigation, route }) => {
 
   const [saving, setSaving] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [aiResult, setAiResult] = useState(null);
+  const [aiResult, setAiResult] = useState(
+    existing?.listingText
+      ? {
+          listingText: existing.listingText,
+          rentSuggestion:
+            existing.rentSuggestionMin != null
+              ? {
+                  min: existing.rentSuggestionMin,
+                  max: existing.rentSuggestionMax,
+                  recommended: existing.rentSuggestionRecommended,
+                  reasoning: existing.rentSuggestionReasoning,
+                }
+              : null,
+        }
+      : null
+  );
 
   // Kuvat: { id?, uri, url?, isPrimary?, uploading? }
   const [images, setImages] = useState([]);
@@ -104,6 +116,32 @@ const AddApartmentScreen = ({ navigation, route }) => {
   const [geocoding, setGeocoding] = useState(false);
   const [geocoded, setGeocoded] = useState(!!existing?.latitude);
   const geocodeTimer = useRef(null);
+
+  // Ref:it kenttien väliseen "Seuraava"-siirtymiseen näppäimistöllä
+  const fieldOrder = ['streetAddress', 'zipcode', 'city', 'region', 'size', 'rent', 'rooms', 'floor', 'buildYear', 'additionalInfo'];
+  const fieldRefs = useRef({});
+  const focusNextField = (key) => {
+    const idx = fieldOrder.indexOf(key);
+    const nextKey = fieldOrder[idx + 1];
+    fieldRefs.current[nextKey]?.focus();
+  };
+  const scrollViewRef = useRef(null);
+
+  // Seurataan näppäimistön korkeutta manuaalisesti, jotta kelluva nappi voidaan
+  // nostaa sen yläpuolelle (Expo Go:ssa android:windowSoftInputMode ei ole käytössä).
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, (e) => {
+      setKeyboardHeight(e.endCoordinates?.height ?? 0);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => setKeyboardHeight(0));
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const set = (key) => (val) => {
     setForm((f) => ({ ...f, [key]: val }));
@@ -187,12 +225,13 @@ const AddApartmentScreen = ({ navigation, route }) => {
         rent: parseFloat(form.rent),
         latitude: form.latitude ? parseFloat(form.latitude) : null,
         longitude: form.longitude ? parseFloat(form.longitude) : null,
+        ...(aiResult?.listingText ? { listingText: aiResult.listingText } : {}),
       };
 
       console.log('📦 Apartment payload:', JSON.stringify(payload));
       let apartmentId = savedApartmentId;
-      if (existing) {
-        await apartmentService.updateApartment(existing.id, payload);
+      if (savedApartmentId) {
+        await apartmentService.updateApartment(savedApartmentId, payload);
         Alert.alert('Tallennettu', 'Kohde päivitetty.', [
           { text: 'OK', onPress: () => navigation.goBack() },
         ]);
@@ -294,13 +333,15 @@ const AddApartmentScreen = ({ navigation, route }) => {
   // AI-generointi
   // ---------------------------------------------------------------------------
   const handleGenerateListing = async () => {
-    const aiRequired = ['zipcode', 'city', 'streetAddress', 'size', 'rooms', 'floor', 'buildYear'];
+    if (!savedApartmentId) {
+      Alert.alert('Tallenna ensin', 'Tallenna kohde ennen AI-ilmoituksen generointia.');
+      return;
+    }
+
+    const aiRequired = ['rooms', 'floor', 'buildYear'];
     for (const k of aiRequired) {
       if (!form[k]?.trim()) {
-        Alert.alert(
-          'Puuttuvia tietoja',
-          'Täytä postinumero, kaupunki, osoite, koko, huoneluku, kerros ja rakennusvuosi.'
-        );
+        Alert.alert('Puuttuvia tietoja', 'Täytä huoneluku, kerros ja rakennusvuosi.');
         return;
       }
     }
@@ -308,25 +349,21 @@ const AddApartmentScreen = ({ navigation, route }) => {
     setAiResult(null);
     try {
       console.log('🤖 Generating listing...');
-      const result = await apartmentService.generateListing({
-        zipcode: form.zipcode.trim(),
-        city: form.city.trim(),
-        street_address: form.streetAddress.trim(),
+      // Tallentaa myös suoraan kohteeseen backendissä (listingText, rentSuggestion*)
+      const result = await apartmentService.generateListing(savedApartmentId, {
         rooms: parseInt(form.rooms),
-        size: parseFloat(form.size),
         floor: parseInt(form.floor),
-        build_year: parseInt(form.buildYear),
-        additional_info: form.additionalInfo.trim() || undefined,
+        buildYear: parseInt(form.buildYear),
+        additionalInfo: form.additionalInfo.trim() || undefined,
       });
-      const parsed = typeof result === 'string' ? JSON.parse(stripCodeFence(result)) : result;
-      console.log('🤖 Result parsed:', parsed?.listingText?.substring(0, 50));
-      setAiResult(parsed);
-      if (parsed.rentSuggestion?.recommended) {
-        setForm((f) => ({ ...f, rent: parsed.rentSuggestion.recommended.toString() }));
+      console.log('🤖 Result:', result?.listingText?.substring(0, 50));
+      setAiResult(result);
+      if (result.rentSuggestion?.recommended) {
+        setForm((f) => ({ ...f, rent: result.rentSuggestion.recommended.toString() }));
       }
     } catch (e) {
       console.error('🤖🔥 AI generation raw error:', e, 'name:', e?.name, 'message:', e?.message, 'status:', e?.status);
-      Alert.alert('Virhe', e.userMessage ?? 'AI-generointi epäonnistui.');
+      Alert.alert('Virhe', e.userMessage ?? e.message ?? 'AI-generointi epäonnistui.');
     } finally {
       setGenerating(false);
     }
@@ -342,7 +379,11 @@ const AddApartmentScreen = ({ navigation, route }) => {
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 60 : 0}
       >
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        ref={scrollViewRef}
+        contentContainerStyle={styles.scroll}
+        keyboardShouldPersistTaps="handled"
+      >
 
         {/* Header */}
         <View style={styles.header}>
@@ -355,13 +396,18 @@ const AddApartmentScreen = ({ navigation, route }) => {
         {/* Sijaintitiedot */}
         <Text style={styles.section}>Sijaintitiedot</Text>
         <Input
+          ref={(r) => { fieldRefs.current.streetAddress = r; }}
           label="Katuosoite"
           value={form.streetAddress}
           onChangeText={set('streetAddress')}
           placeholder="Fleminginkatu 12"
           icon="map-pin"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('streetAddress')}
         />
         <Input
+          ref={(r) => { fieldRefs.current.zipcode = r; }}
           label="Postinumero"
           value={form.zipcode}
           onChangeText={set('zipcode')}
@@ -369,20 +415,31 @@ const AddApartmentScreen = ({ navigation, route }) => {
           keyboardType="numeric"
           maxLength={5}
           icon="hash"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('zipcode')}
         />
         <Input
+          ref={(r) => { fieldRefs.current.city = r; }}
           label="Kaupunki"
           value={form.city}
           onChangeText={set('city')}
           placeholder="Helsinki"
           icon="navigation"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('city')}
         />
         <Input
+          ref={(r) => { fieldRefs.current.region = r; }}
           label="Maakunta"
           value={form.region}
           onChangeText={set('region')}
           placeholder="Uusimaa (valinnainen)"
           icon="map"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('region')}
         />
 
         {/* Kohteen tiedot */}
@@ -408,26 +465,29 @@ const AddApartmentScreen = ({ navigation, route }) => {
 
         <Text style={styles.section}>Kohteen tiedot</Text>
         <Input
+          ref={(r) => { fieldRefs.current.size = r; }}
           label="Koko (m²)"
           value={form.size}
           onChangeText={set('size')}
           placeholder="42.5"
           keyboardType="decimal-pad"
           icon="maximize"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('size')}
         />
         <Input
+          ref={(r) => { fieldRefs.current.rent = r; }}
           label="Vuokra (€/kk)"
           value={form.rent}
           onChangeText={set('rent')}
           placeholder="1050"
           keyboardType="decimal-pad"
           icon="credit-card"
+          returnKeyType="next"
+          blurOnSubmit={false}
+          onSubmitEditing={() => focusNextField('rent')}
         />
-
-        {/* Tallenna-nappi */}
-        <Button onPress={handleSave} disabled={saving} icon="save" style={styles.saveBtn}>
-          {saving ? 'Tallennetaan...' : existing ? 'Tallenna muutokset' : 'Luo kohde'}
-        </Button>
 
         {/* Kuvat — näkyy kun kohde on tallennettu */}
         {savedApartmentId && (
@@ -465,36 +525,50 @@ const AddApartmentScreen = ({ navigation, route }) => {
           </Text>
 
           <Input
+            ref={(r) => { fieldRefs.current.rooms = r; }}
             label="Huoneluku"
             value={form.rooms}
             onChangeText={set('rooms')}
             placeholder="2"
             keyboardType="numeric"
             icon="grid"
+            returnKeyType="next"
+            blurOnSubmit={false}
+            onSubmitEditing={() => focusNextField('rooms')}
           />
           <Input
+            ref={(r) => { fieldRefs.current.floor = r; }}
             label="Kerros"
             value={form.floor}
             onChangeText={set('floor')}
             placeholder="3"
             keyboardType="numeric"
             icon="layers"
+            returnKeyType="next"
+            blurOnSubmit={false}
+            onSubmitEditing={() => focusNextField('floor')}
           />
           <Input
+            ref={(r) => { fieldRefs.current.buildYear = r; }}
             label="Rakennusvuosi"
             value={form.buildYear}
             onChangeText={set('buildYear')}
             placeholder="1965"
             keyboardType="numeric"
             icon="calendar"
+            returnKeyType="next"
+            blurOnSubmit={false}
+            onSubmitEditing={() => focusNextField('buildYear')}
           />
           <Input
+            ref={(r) => { fieldRefs.current.additionalInfo = r; }}
             label="Lisätiedot (valinnainen)"
             value={form.additionalInfo}
             onChangeText={set('additionalInfo')}
             placeholder="sauna, parveke, hissi"
             icon="info"
             multiline
+            returnKeyType="done"
           />
 
           <Button
@@ -535,6 +609,9 @@ const AddApartmentScreen = ({ navigation, route }) => {
                     onChangeText={(val) => setAiResult((r) => ({ ...r, listingText: val }))}
                     multiline
                     inputStyle={styles.listingTextInput}
+                    onFocus={() => {
+                      setTimeout(() => scrollViewRef.current?.scrollToEnd({ animated: true }), 100);
+                    }}
                   />
                 </View>
               )}
@@ -544,6 +621,25 @@ const AddApartmentScreen = ({ navigation, route }) => {
 
       </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Kelluva tallenna-nappi — pysyy näkyvissä myös näppäimistön ollessa auki */}
+      <View
+        style={[
+          styles.floatingSaveWrap,
+          keyboardHeight > 0 && { bottom: keyboardHeight + Spacing.base },
+        ]}
+        pointerEvents="box-none"
+      >
+        <Button
+          onPress={handleSave}
+          disabled={saving}
+          icon="save"
+          size="md"
+          style={styles.floatingSaveBtn}
+        >
+          {saving ? '...' : existing ? 'Tallenna' : 'Luo kohde'}
+        </Button>
+      </View>
     </SafeAreaView>
   );
 };
@@ -553,7 +649,7 @@ const TILE_SIZE = 100;
 const styles = StyleSheet.create({
   scroll: {
     padding: Spacing.xl,
-    paddingBottom: Spacing['3xl'],
+    paddingBottom: Spacing['3xl'] + 40,
   },
   header: {
     flexDirection: 'row',
@@ -578,8 +674,19 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xl,
     marginBottom: Spacing.sm,
   },
-  saveBtn: {
-    marginTop: Spacing.xl,
+  floatingSaveWrap: {
+    position: 'absolute',
+    right: Spacing.lg,
+    bottom: Platform.OS === 'ios' ? Spacing['2xl'] : Spacing.lg,
+  },
+  floatingSaveBtn: {
+    borderRadius: 24,
+    paddingHorizontal: Spacing.lg,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 6,
+    elevation: 4,
   },
   geoRow: {
     flexDirection: 'row',

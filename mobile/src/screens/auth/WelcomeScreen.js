@@ -39,11 +39,17 @@ const WelcomeScreen = ({ navigation }) => {
       if (result.success) {
         console.log('✅ Sign in successful!');
         console.log('👤 Result userId:', result.userId);
-        
+
+        if (!result.tokens?.idToken) {
+          console.error('⚠️ No idToken in sign in result');
+          Alert.alert('Virhe', 'Kirjautuminen epäonnistui: tokenia ei saatu.');
+          return;
+        }
+
         // Hae rooli tokenista
         const decoded = jwtDecode(result.tokens.idToken);
         console.log('🎫 Decoded token:', decoded);
-        
+
         // Tarkista rooli kahdesta paikasta
         let role = null;
         if (decoded.roles && decoded.roles.length > 0) {
@@ -51,17 +57,25 @@ const WelcomeScreen = ({ navigation }) => {
         } else if (decoded.user_role) {
           role = decoded.user_role.toLowerCase();
         }
-        
+
+        if (role && !['tenant', 'landlord'].includes(role)) {
+          console.error('⚠️ Unknown role from Entra:', role);
+          Alert.alert('Virhe', `Tuntematon rooli "${role}". Ota yhteyttä ylläpitoon.`);
+          return;
+        }
+
         if (role) {
           console.log('✅ User role from Entra:', role);
-          
+
           // Tarkista onko profiili jo täytetty
           const existingProfile = await SecureStore.getItemAsync(STORAGE_KEYS.USER_PROFILE);
           console.log('🔍 Checking existing profile...');
           console.log('Profile exists:', !!existingProfile);
-          
-          if (existingProfile) {
-            console.log('📋 Profile already exists, skipping CompleteProfile');
+
+          // CompleteProfileScreen kysyy vuokralaisen matching-tietoja (ikä, sukupuoli,
+          // lemmikki) — ei relevanttia vuokranantajalle, joten ohitetaan se sille.
+          if (existingProfile || role === 'landlord') {
+            console.log('📋 Skipping CompleteProfile (profile exists or role=landlord)');
 
             // Varmista että käyttäjä on rekisteröity backendiin (409 = jo olemassa = ok)
             try {
@@ -72,6 +86,10 @@ const WelcomeScreen = ({ navigation }) => {
                 console.log('ℹ️ User already exists in backend');
               } else {
                 console.error('❌ Backend registration failed:', e.userMessage ?? e.message);
+                Alert.alert(
+                  'Huomio',
+                  'Yhteys palvelimeen epäonnistui rekisteröinnissä. Osa toiminnoista ei ehkä toimi ennen kuin yrität kirjautua uudelleen.'
+                );
               }
             }
 
@@ -87,7 +105,7 @@ const WelcomeScreen = ({ navigation }) => {
             console.log('📝 No profile found, navigating to CompleteProfile');
             // Tallenna rooli
             await authService.saveUserInfo(result.userId, role);
-            // Mene profiilin täyttöön
+            // Mene profiilin täyttöön (vain vuokralaiselle)
             navigation.navigate('CompleteProfile', { role });
           }
         } else {
