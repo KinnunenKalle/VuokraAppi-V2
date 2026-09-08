@@ -31,6 +31,7 @@ export const ENTRA_CONFIG = {
   ],
   
   REDIRECT_URI_SCHEME: 'vuokraappi',
+  REDIRECT_URI: 'vuokraappi://redirect',
 };
 
 // Storage Keys

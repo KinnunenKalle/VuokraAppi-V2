@@ -1,6 +1,5 @@
 import { API_BASE_URL, ERROR_MESSAGES } from '../constants';
-import * as SecureStore from 'expo-secure-store';
-import { STORAGE_KEYS } from '../constants';
+import authService from './authService';
 
 /**
  * API Client - käsittelee kaikki HTTP-pyynnöt
@@ -11,19 +10,17 @@ class APIClient {
   }
 
   /**
-   * Hakee access tokenin storagesta
+   * Hakee voimassa olevan access tokenin — uusii sen automaattisesti
+   * refresh tokenilla jos se on vanhentunut.
    */
-async getAccessToken() {
-  try {
-    // Käytä ACCESS tokenia
-    const accessToken = await SecureStore.getItemAsync(STORAGE_KEYS.ACCESS_TOKEN);
-    // console.log('🔑 Full ACCESS token:', accessToken);
-    return accessToken;
-  } catch (error) {
-    console.error('Error getting access token:', error);
-    return null;
+  async getAccessToken() {
+    try {
+      return await authService.getValidAccessToken();
+    } catch (error) {
+      console.error('Error getting access token:', error);
+      return null;
+    }
   }
-}
 
   /**
    * Luo headerit requestille

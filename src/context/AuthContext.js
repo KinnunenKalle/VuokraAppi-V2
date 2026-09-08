@@ -26,7 +26,13 @@ export const AuthProvider = ({ children }) => {
     try {
       const isAuth = await authService.isAuthenticated();
       console.log('🔐 checkAuth - isAuthenticated:', isAuth);
-      
+
+      if (!isAuth) {
+        // Token(it) puuttuvat tai refresh epäonnistui — siivoa mahdolliset
+        // kuolleet tokenit/profiili ettei niitä yritetä uusia turhaan uudelleen.
+        await authService.signOut();
+      }
+
       if (isAuth) {
         const { userId, role } = await authService.getUserInfo();
         console.log('👤 checkAuth - getUserInfo result:', { userId, role });
@@ -177,13 +183,18 @@ export const AuthProvider = ({ children }) => {
    * Lataa profiili uudelleen
    */
   const refreshProfile = async () => {
-    if (!user?.id) return;
-    
+    if (!user?.id) return { success: false, error: 'User ID puuttuu' };
+
     try {
       const profileData = await userService.getProfile(user.id);
       setProfile(profileData);
+      return { success: true, data: profileData };
     } catch (error) {
       console.error('Error refreshing profile:', error);
+      return {
+        success: false,
+        error: error.userMessage || error.message || 'Profiilin lataus epäonnistui',
+      };
     }
   };
  

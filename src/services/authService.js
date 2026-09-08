@@ -87,13 +87,70 @@ export const authService = {
   },
 
   /**
+   * Tarkista onko token vanhentunut (tai vanhenemassa 60s sisällä)
+   */
+  isTokenExpired(token) {
+    try {
+      const { exp } = jwtDecode(token);
+      if (!exp) return true;
+      return Date.now() >= exp * 1000 - 60_000;
+    } catch (error) {
+      return true;
+    }
+  },
+
+  /**
+   * Hae uusi access token refresh tokenilla
+   */
+  async refreshTokens(refreshToken) {
+    try {
+      const tokenResult = await AuthSession.refreshAsync(
+        {
+          clientId: ENTRA_CONFIG.CLIENT_ID,
+          refreshToken,
+        },
+        {
+          tokenEndpoint: ENTRA_CONFIG.TOKEN_ENDPOINT,
+        }
+      );
+
+      await this.saveTokens({
+        accessToken: tokenResult.accessToken,
+        idToken: tokenResult.idToken,
+        // Entra ei aina palauta uutta refresh tokenia — säilytä vanha jos ei tullut uutta
+        refreshToken: tokenResult.refreshToken || refreshToken,
+      });
+
+      return tokenResult.accessToken;
+    } catch (error) {
+      console.error('Token refresh failed:', error);
+      return null;
+    }
+  },
+
+  /**
+   * Hae voimassa oleva access token — uusii tarvittaessa refresh tokenilla.
+   * Palauttaa null jos kirjautuminen on vanhentunut eikä sitä voi uusia.
+   */
+  async getValidAccessToken() {
+    const { accessToken, refreshToken } = await this.getTokens();
+    if (!accessToken) return null;
+
+    if (!this.isTokenExpired(accessToken)) {
+      return accessToken;
+    }
+    if (!refreshToken) return null;
+
+    return this.refreshTokens(refreshToken);
+  },
+
+  /**
    * Kirjautuminen Entra ID:hen
    * Palauttaa auth response joka sisältää authorization coden
    */
   async signIn() {
     try {
-      // HARD-CODED redirect URI (kuten Azuressa määritelty)
-      const redirectUri = 'vuokraappi://redirect';
+      const redirectUri = ENTRA_CONFIG.REDIRECT_URI;
 
       console.log('🔗 Redirect URI:', redirectUri);
 
@@ -124,9 +181,6 @@ export const authService = {
       console.log('📱 Auth result:', result.type);
 
       if (result.type === 'success') {
-        // HARD-CODED redirect URI (sama kuin yllä)
-        const redirectUri = 'vuokraappi://redirect';
-
         // Vaihda authorization code tokeneihin
         const tokenResult = await AuthSession.exchangeCodeAsync(
           {
@@ -186,13 +240,14 @@ export const authService = {
    */
   async signOut() {
     try {
-      // Poista tokenit ja user_id (mutta SÄILYTÄ profiili!)
+      // Poista kaikki — myös profiili, ettei se vuoda seuraavaan samalla
+      // laitteella kirjautuvaan käyttäjään.
       await SecureStore.deleteItemAsync(STORAGE_KEYS.ACCESS_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.ID_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.REFRESH_TOKEN);
       await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_ID);
-      await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_ROLE); // Poista rooli (se asetetaan uudelleen kirjautumisessa)
-      // SÄILYTETÄÄN: USER_PROFILE (jotta profiilia ei tarvitse täyttää uudelleen)
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_ROLE);
+      await SecureStore.deleteItemAsync(STORAGE_KEYS.USER_PROFILE);
     } catch (error) {
       console.error('Error signing out:', error);
     }
@@ -202,8 +257,8 @@ export const authService = {
    * Tarkista onko käyttäjä kirjautunut
    */
   async isAuthenticated() {
-    const { accessToken } = await this.getTokens();
-    return !!accessToken;
+    const token = await this.getValidAccessToken();
+    return !!token;
   },
 };
 
