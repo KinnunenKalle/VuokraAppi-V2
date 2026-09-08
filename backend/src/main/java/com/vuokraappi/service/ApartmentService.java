@@ -121,6 +121,7 @@ public class ApartmentService {
         if (requestDTO.getLongitude() != null) apartment.setLongitude(requestDTO.getLongitude());
         if (requestDTO.getLatitude() != null) apartment.setLatitude(requestDTO.getLatitude());
         if (requestDTO.getRent() != null) apartment.setRent(requestDTO.getRent());
+        if (requestDTO.getListingText() != null) apartment.setListingText(requestDTO.getListingText());
 
         Apartment updatedApartment = apartmentRepository.save(apartment);
         return convertToDTO(updatedApartment);

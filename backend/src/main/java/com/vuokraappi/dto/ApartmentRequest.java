@@ -19,4 +19,5 @@ public class ApartmentRequest {
     private Double longitude;
     private Double latitude;
     private BigDecimal rent;
+    private String listingText;
 }
