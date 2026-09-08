@@ -1,0 +1,64 @@
+# application-local.yml
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/vuokraappi
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 20000
+      idle-timeout: 300000
+      max-lifetime: 1200000
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  
+  security:
+    oauth2:
+      client:
+        registration:
+          graph:
+            client-id: ${AZURE_GW_CLIENT_ID:your-gateway-client-id}
+            client-secret: ${AZURE_GW_CLIENT_SECRET:your-gateway-client-secret}
+            authorization-grant-type: client_credentials
+            scope: https://graph.microsoft.com/.default
+        provider:
+          graph:
+            token-uri: https://login.microsoftonline.com/${AZURE_TENANT_ID:your-tenant-id}/oauth2/v2.0/token
+
+logging:
+  level:
+    com.vuokraappi: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.springframework.web: DEBUG
+
+microsoft:
+  graph:
+    api:
+      base-url: https://graph.microsoft.com/v1.0
+      timeout: 30000
+
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+azure:
+  application:
+    app-client-id: ${AZURE_APP_CLIENT_ID:00000000-0000-0000-0000-000000000000}
+  storage:
+    # Azurite-emulaattorin oletusyhteys. Käynnistä: docker run -p 10000:10000 mcr.microsoft.com/azure-storage/azurite
+    connection-string: ${AZURE_STORAGE_CONNECTION_STRING:UseDevelopmentStorage=true}
+    container-name: apartment-images
+    sas-expiration-hours: 1
+    max-file-size-bytes: 10485760
+    max-images-per-apartment: 10

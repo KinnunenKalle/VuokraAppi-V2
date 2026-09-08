@@ -1,0 +1,61 @@
+spring:
+  datasource:
+    url: jdbc:sqlserver://vuokraappi.database.windows.net:1433;database=Vuokraappidev;encrypt=true;trustServerCertificate=false;hostNameInCertificate=*.database.windows.net;loginTimeout=30
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
+    driver-class-name: com.microsoft.sqlserver.jdbc.SQLServerDriver
+    hikari:
+      connection-test-query: ""
+      validation-timeout: 5000
+      keepalive-time: 0
+      idle-timeout: 60000
+      minimum-idle: 0
+  jpa:
+    database-platform: org.hibernate.dialect.SQLServerDialect
+    hibernate:
+      ddl-auto: update
+  security:
+    oauth2:
+      client:
+        registration:
+          graph:
+            client-id: ${SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GRAPH_CLIENT_ID}
+            client-secret: ${SPRING_SECURITY_OAUTH2_CLIENT_REGISTRATION_GRAPH_CLIENT_SECRET}
+            authorization-grant-type: client_credentials
+            scope: https://graph.microsoft.com/.default
+        provider:
+          graph:
+            token-uri: https://login.microsoftonline.com/95e94f96-fda6-4111-953a-439ab54fce6e/oauth2/v2.0/token
+  servlet:
+    multipart:
+      max-file-size: 10MB          # Spring Boot:n oma raja – täsmää max-file-size-bytes kanssa
+      max-request-size: 10MB
+
+logging:
+  level:
+    com.vuokraappi: INFO
+    org.hibernate.SQL: INFO
+    org.springframework.web: INFO
+
+azure:
+  activedirectory:
+    tenant-id: ${AZURE_TENANT_ID}
+    client-id: ${AZURE_CLIENT_ID}
+    client-secret: ${AZURE_CLIENT_SECRET}
+  storage:
+    connection-string: ${AZURE_STORAGE_CONNECTION_STRING}   # ympäristömuuttuja
+    container-name: apartment-images
+    sas-expiration-hours: 1        # SAS URL voimassa 1 tunti
+    max-file-size-bytes: 10485760  # 10 MB
+    max-images-per-apartment: 10
+
+microsoft:
+  graph:
+    api:
+      base-url: https://graph.microsoft.com/v1.0
+      timeout: 30000
+
+# Azure Application Insights (optional)
+# azure:
+#   application-insights:
+#     instrumentation-key: ${APPINSIGHTS_INSTRUMENTATIONKEY}

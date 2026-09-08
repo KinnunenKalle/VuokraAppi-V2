@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # PostgreSQL-tietokanta
+  postgres:
+    image: postgres:15-alpine
+    container_name: vuokraappi-postgres
+    environment:
+      POSTGRES_DB: vuokraappi
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/main/resources/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - vuokraappi-network
+
+  # Spring Boot -sovellus
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: vuokraappi-backend
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      # Datasource-asetukset
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/vuokraappi
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+      # Azure-asetukset (.env tiedostosta)
+      AZURE_TENANT_ID: ${AZURE_TENANT_ID:-your-tenant-id}
+      # Graph API Gateway credentials (backend → Graph API)
+      AZURE_GW_CLIENT_ID: ${AZURE_GW_CLIENT_ID:-your-gateway-client-id}
+      AZURE_GW_CLIENT_SECRET: ${AZURE_GW_CLIENT_SECRET:-your-gateway-client-secret}
+      # Main App Client ID (jossa App Rolet on)
+      AZURE_APP_CLIENT_ID: ${AZURE_APP_CLIENT_ID:-your-app-client-id}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - vuokraappi-network
+    restart: unless-stopped
+
+  # pgAdmin - PostgreSQL hallintakäyttöliittymä (valinnainen)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: vuokraappi-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@vuokraappi.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - vuokraappi-network
+    profiles:
+      - tools  # Käynnistyy vain kun käytetään --profile tools
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  vuokraappi-network:
+    driver: bridge
