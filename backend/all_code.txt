@@ -1,0 +1,3370 @@
+=== src/main/java/com/vuokraappi/ai/StatisticsFinlandTool.java ===
+package com.vuokraappi.ai;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Hakee vapaarahoitteisten vuokra-asuntojen neliövuokratilastot
+ * Tilastokeskuksen StatFin PxWeb API:sta.
+ *
+ * Taulukko: statfin_asvu_pxt_13eb.px
+ * - Vuosineljännes: viimeisin saatavilla (haetaan dynaamisesti)
+ * - Postinumero: haetaan parametrina
+ * - Huoneluku: Yksiöt, Kaksiot, Kolmiot+
+ * - Tiedot: Neliövuokra (eur/m2) ja Lukumäärä
+ *
+ * API-dokumentaatio: https://stat.fi/tup/tilastotietokannat/pxweb-api-rajapintojen-kaytto.html
+ */
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class StatisticsFinlandTool {
+
+    private static final String TABLE_PATH =
+            "/PXWeb/api/v1/fi/StatFin/statfin_asvu_pxt_13eb.px";
+
+    private final WebClient statFinWebClient;
+
+    public String fetch(String zipcode) {
+        log.info("Fetching Statistics Finland rent data for zipcode={}", zipcode);
+
+        try {
+            // Haetaan metadata yhdellä kutsulla: uusin neljännes + postinumeroavain
+            Map metadata = fetchMetadata();
+
+            String latestQuarter = extractLatestQuarter(metadata);
+            if (latestQuarter == null) {
+                latestQuarter = estimateLatestQuarter();
+                log.warn("Could not determine latest quarter from metadata, using estimate: {}", latestQuarter);
+            }
+
+            String postalKey = extractPostalKey(metadata, zipcode);
+            if (postalKey == null) {
+                return String.format(
+                        "Postinumeroa %s ei löydy Tilastokeskuksen vuokratilastoista. " +
+                        "Tieto saattaa puuttua pieniltä tai harvaanasutuilta alueilta.", zipcode);
+            }
+
+            log.info("Using quarter={}, postalKey='{}' for zipcode={}", latestQuarter, postalKey, zipcode);
+            return fetchRentData(zipcode, postalKey, latestQuarter);
+
+        } catch (WebClientResponseException e) {
+            log.error("StatFin API error for zipcode {}: {} - {}",
+                    zipcode, e.getStatusCode(), e.getResponseBodyAsString());
+            return String.format(
+                    "Tilastokeskuksen vuokratilastoja ei saatu haettua postinumerolle %s " +
+                    "(HTTP %s).", zipcode, e.getStatusCode());
+        } catch (Exception e) {
+            log.error("Unexpected error fetching StatFin data for zipcode {}", zipcode, e);
+            return String.format(
+                    "Tilastokeskuksen vuokratilastoja ei saatu haettua postinumerolle %s.", zipcode);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map fetchMetadata() {
+        Map metadata = statFinWebClient.get()
+                .uri(TABLE_PATH)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+
+        // Logitetaan muuttujien nimet ja muutama arvo debuggausta varten
+        if (metadata != null && log.isDebugEnabled()) {
+            List<Map> variables = (List<Map>) metadata.get("variables");
+            if (variables != null) {
+                for (Map v : variables) {
+                    List<String> vals = (List<String>) v.get("values");
+                    int count = vals != null ? vals.size() : 0;
+                    String sample = vals != null && count > 0
+                            ? vals.get(0) + " ... " + vals.get(count - 1)
+                            : "none";
+                    log.debug("Variable '{}': {} values, sample: {}",
+                            v.get("code"), count, sample);
+                }
+            }
+        }
+        return metadata;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractLatestQuarter(Map metadata) {
+        try {
+            if (metadata == null) return null;
+            List<Map> variables = (List<Map>) metadata.get("variables");
+            if (variables == null) return null;
+            for (Map variable : variables) {
+                if ("Vuosineljännes".equals(variable.get("code"))) {
+                    List<String> values = (List<String>) variable.get("values");
+                    if (values != null && !values.isEmpty()) {
+                        // Arvot nousevassa järjestyksessä – viimeinen on uusin
+                        return values.get(values.size() - 1);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Could not extract latest quarter from metadata", e);
+        }
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractPostalKey(Map metadata, String zipcode) {
+        try {
+            if (metadata == null) return null;
+            List<Map> variables = (List<Map>) metadata.get("variables");
+            if (variables == null) return null;
+            for (Map variable : variables) {
+                if ("Postinumero".equals(variable.get("code"))) {
+                    List<String> values = (List<String>) variable.get("values");
+                    if (values == null) return null;
+                    return values.stream()
+                            .filter(v -> v.startsWith(zipcode))
+                            .findFirst()
+                            .orElse(null);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Could not extract postal key for zipcode {}", zipcode, e);
+        }
+        return null;
+    }
+
+    /**
+     * Arvioi uusimman saatavilla olevan neljänneksen nykyisestä päivämäärästä.
+     * StatFin päivittyy n. 1 kvartaali jäljessä.
+     */
+    private String estimateLatestQuarter() {
+        LocalDate now = LocalDate.now();
+        int year = now.getYear();
+        int month = now.getMonthValue();
+
+        int quarter;
+        if (month <= 4) {
+            quarter = 3; year = year - 1;
+        } else if (month <= 7) {
+            quarter = 4; year = year - 1;
+        } else if (month <= 10) {
+            quarter = 1;
+        } else {
+            quarter = 2;
+        }
+        return String.format("%dQ%d", year, quarter);
+    }
+
+    /**
+     * Hakee vuokratiedot PxWeb POST-kyselyllä json-stat2-muodossa.
+     *
+     * Postinumerot taulukossa ovat muodossa "00530 Kallio (Helsinki )" –
+     * haetaan ensin metadatasta se arvo jonka koodi alkaa haetulla postinumerolla.
+     */
+    @SuppressWarnings("unchecked")
+    private String fetchRentData(String zipcode, String postalKey, String quarter) {
+
+        String queryBody = String.format("""
+                {
+                  "query": [
+                    {
+                      "code": "Vuosineljännes",
+                      "selection": { "filter": "item", "values": ["%s"] }
+                    },
+                    {
+                      "code": "Postinumero",
+                      "selection": { "filter": "item", "values": ["%s"] }
+                    },
+                    {
+                      "code": "Huoneluku",
+                      "selection": { "filter": "item", "values": ["01", "02", "03"] }
+                    },
+                    {
+                      "code": "Tiedot",
+                      "selection": { "filter": "item", "values": ["lkm_ptno", "keskivuokra"] }
+                    }
+                  ],
+                  "response": { "format": "json-stat2" }
+                }
+                """, quarter, postalKey);
+
+        log.debug("StatFin query for zipcode={}, quarter={}", zipcode, quarter);
+        log.debug("StatFin query body: {}", queryBody);
+
+        Map response = statFinWebClient.post()
+                .uri(TABLE_PATH)
+                .header("Content-Type", "application/json")
+                .bodyValue(queryBody)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+
+        return parseAndFormat(response, zipcode, quarter);
+    }
+
+    /**
+     * Parsii json-stat2-vastauksen tekstimuotoiseksi yhteenvedoksi.
+     *
+     * json-stat2-arvojen järjestys on muuttujien karteesinen tulo:
+     * Huoneluku (3) x Tiedot (2) = 6 arvoa:
+     * [Yksiöt/neliövuokra, Yksiöt/lkm, Kaksiot/neliövuokra, Kaksiot/lkm, Kolmiot+/neliövuokra, Kolmiot+/lkm]
+     */
+    @SuppressWarnings("unchecked")
+    private String parseAndFormat(Map response, String zipcode, String quarter) {
+        if (response == null) {
+            return String.format("Ei vuokratilastoja saatavilla postinumerolle %s.", zipcode);
+        }
+
+        try {
+            List<Object> values = (List<Object>) response.get("value");
+
+            if (values == null || values.stream().allMatch(v -> v == null)) {
+                return String.format(
+                        "Tilastokeskuksella ei ole riittävästi vuokratietoja postinumerolle %s " +
+                        "(alle 20 havaintoa tai tiedot peitetty).", zipcode);
+            }
+
+            // Haetaan postinumeron alueen nimi
+            Map<String, Object> dimension = (Map<String, Object>) response.get("dimension");
+            String areaName = extractAreaName(dimension);
+
+            StringBuilder sb = new StringBuilder();
+            sb.append(String.format(
+                    "Tilastokeskus – Vapaarahoitteiset vuokrat, %s (%s):\n\n", areaName, quarter));
+
+            String[] roomLabels = {"Yksiöt", "Kaksiot", "Kolmiot+"};
+            for (int i = 0; i < roomLabels.length; i++) {
+                Object rentValue  = values.size() > i * 2     ? values.get(i * 2)     : null;
+                Object countValue = values.size() > i * 2 + 1 ? values.get(i * 2 + 1) : null;
+
+                sb.append(String.format("%-12s", roomLabels[i] + ":"));
+                if (rentValue != null) {
+                    // StatFin palauttaa neliövuokrat 10x skaalattuna (esim. 219 = 21.9 €/m²)
+                    sb.append(String.format("%.1f €/m²", toDouble(rentValue) / 10.0));
+                    if (countValue != null) {
+                        sb.append(String.format("  (%s havaintoa)", countValue));
+                    }
+                } else {
+                    sb.append("ei tietoja (alle 20 havaintoa)");
+                }
+                sb.append("\n");
+            }
+
+            sb.append("\nLähde: Tilastokeskus, Asuntojen vuokrat. " +
+                      "Neliövuokrat ovat painotettuja geometrisia keskiarvoja.");
+            return sb.toString();
+
+        } catch (Exception e) {
+            log.error("Error parsing StatFin response for zipcode {}", zipcode, e);
+            return String.format("Vuokratilastojen käsittely epäonnistui postinumerolle %s.", zipcode);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractAreaName(Map<String, Object> dimension) {
+        try {
+            if (dimension == null) return "";
+            Map<String, Object> postalDim = (Map<String, Object>) dimension.get("Postinumero");
+            if (postalDim == null) return "";
+            Map<String, Object> category = (Map<String, Object>) postalDim.get("category");
+            if (category == null) return "";
+            Map<String, String> labels = (Map<String, String>) category.get("label");
+            if (labels == null || labels.isEmpty()) return "";
+            return labels.values().iterator().next();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private double toDouble(Object value) {
+        if (value instanceof Number) return ((Number) value).doubleValue();
+        if (value instanceof String) return Double.parseDouble((String) value);
+        return 0.0;
+    }
+}=== src/main/java/com/vuokraappi/ai/NeighborhoodTool.java ===
+package com.vuokraappi.ai;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.web.reactive.function.client.WebClient;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Hakee kaupunginosa- ja lähipalvelutiedot kahdessa vaiheessa:
+ * 1. Nominatim (OpenStreetMap): katuosoite + postinumero → koordinaatit
+ * 2. Overpass API (OpenStreetMap): koordinaatit → lähipalvelut 1000m säteellä
+ *
+ * Molemmat palvelut ovat ilmaisia ja avoimia, ei API-avainta tarvita.
+ * Nominatim usage policy: max 1 req/s, User-Agent pakollinen.
+ * https://operations.osmfoundation.org/policies/nominatim/
+ */
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class NeighborhoodTool {
+
+    private static final int SEARCH_RADIUS_METERS = 1000;
+    private static final String USER_AGENT = "vuokraappi/1.0 (rental listing assistant)";
+
+    private final WebClient nominatimWebClient;
+    private final WebClient overpassWebClient;
+
+    public String fetch(String zipcode, String city, String streetAddress) {
+        log.info("Fetching neighborhood info: streetAddress={}, zipcode={}, city={}",
+                streetAddress, zipcode, city);
+
+        try {
+            // Vaihe 1: Geocoding - katuosoite koordinaateiksi
+            double[] coords = geocode(streetAddress, zipcode, city);
+            if (coords == null) {
+                log.warn("Geocoding failed for address: {} {} {}", streetAddress, zipcode, city);
+                return "Kaupunginosa- ja palvelutietoja ei voitu hakea: osoitetta ei löydy kartalta.";
+            }
+
+            double lat = coords[0];
+            double lon = coords[1];
+            log.info("Geocoded '{} {}' to lat={}, lon={}", streetAddress, zipcode, lat, lon);
+
+            // Vaihe 2: Lähipalvelut Overpass API:lla
+            return fetchNearbyServices(lat, lon, streetAddress, zipcode, city);
+
+        } catch (Exception e) {
+            log.error("Error fetching neighborhood info for {} {}", streetAddress, zipcode, e);
+            return "Kaupunginosa- ja palvelutietoja ei voitu hakea teknisen virheen vuoksi.";
+        }
+    }
+
+    /**
+     * Muuntaa osoitteen koordinaateiksi Nominatim-palvelun avulla.
+     *
+     * Strategia:
+     * 1. Ensin haetaan tarkalla osoitteella (katu + postinumero + kaupunki)
+     * 2. Jos ei löydy, yritetään pelkällä postinumerolla (fallback)
+     *
+     * Palauttaa [lat, lon] tai null jos osoitetta ei löydy.
+     */
+    @SuppressWarnings("unchecked")
+    private double[] geocode(String streetAddress, String zipcode, String city) {
+        // Yritys 1: Tarkka haku katuosoitteella
+        log.debug("Geocoding with full address: street={}, postalcode={}, city={}",
+                streetAddress, zipcode, city);
+
+        List<Map> results = nominatimWebClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/search")
+                        .queryParam("street", streetAddress)
+                        .queryParam("postalcode", zipcode)
+                        .queryParam("city", city)
+                        .queryParam("country", "Finland")
+                        .queryParam("format", "json")
+                        .queryParam("limit", "1")
+                        .build())
+                .header("User-Agent", USER_AGENT)
+                .retrieve()
+                .bodyToFlux(Map.class)
+                .collectList()
+                .block();
+
+        if (results != null && !results.isEmpty()) {
+            return extractCoords(results.get(0));
+        }
+
+        // Yritys 2: Fallback pelkällä postinumerolla jos katuosoitetta ei löydy
+        log.debug("Full address geocoding failed, falling back to zipcode: {}", zipcode);
+
+        List<Map> fallbackResults = nominatimWebClient.get()
+                .uri(uriBuilder -> uriBuilder
+                        .path("/search")
+                        .queryParam("postalcode", zipcode)
+                        .queryParam("city", city)
+                        .queryParam("country", "Finland")
+                        .queryParam("format", "json")
+                        .queryParam("limit", "1")
+                        .build())
+                .header("User-Agent", USER_AGENT)
+                .retrieve()
+                .bodyToFlux(Map.class)
+                .collectList()
+                .block();
+
+        if (fallbackResults != null && !fallbackResults.isEmpty()) {
+            log.info("Geocoding succeeded with zipcode fallback for {}", zipcode);
+            return extractCoords(fallbackResults.get(0));
+        }
+
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private double[] extractCoords(Map result) {
+        try {
+            double lat = Double.parseDouble((String) result.get("lat"));
+            double lon = Double.parseDouble((String) result.get("lon"));
+            return new double[]{lat, lon};
+        } catch (Exception e) {
+            log.warn("Failed to parse coordinates from Nominatim result: {}", result);
+            return null;
+        }
+    }
+
+    /**
+     * Hakee lähipalvelut Overpass API:lla koordinaattien ympäriltä.
+     *
+     * Kategoriat:
+     * - Ruokakaupat (supermarket, convenience)
+     * - Koulut ja päiväkodit (school, kindergarten)
+     * - Julkinen liikenne (bus_stop, subway_entrance, tram_stop)
+     * - Liikuntapaikat (sports_centre, fitness_centre, pitch, swimming_pool)
+     * - Ravintolat ja kahvilat (restaurant, cafe, fast_food)
+     */
+    private String fetchNearbyServices(double lat, double lon,
+                                       String streetAddress, String zipcode, String city) {
+        String overpassQuery = buildOverpassQuery(lat, lon);
+
+        log.debug("Executing Overpass query for lat={}, lon={}", lat, lon);
+
+        Map response = overpassWebClient.post()
+                .uri("/api/interpreter")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .bodyValue("data=" + overpassQuery)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+
+        if (response == null) {
+            return "Lähipalvelutietoja ei saatu haettua.";
+        }
+
+        return formatResults(response, streetAddress, zipcode, city);
+    }
+
+    private String buildOverpassQuery(double lat, double lon) {
+        return String.format("""
+                [out:json][timeout:10];
+                (
+                  node["shop"~"supermarket|convenience"](around:%d,%.6f,%.6f);
+                  way["shop"~"supermarket|convenience"](around:%d,%.6f,%.6f);
+                  node["amenity"~"school|kindergarten"](around:%d,%.6f,%.6f);
+                  node["public_transport"~"stop_position|station"](around:%d,%.6f,%.6f);
+                  node["highway"="bus_stop"](around:%d,%.6f,%.6f);
+                  node["railway"~"subway_entrance|tram_stop"](around:%d,%.6f,%.6f);
+                  node["leisure"~"sports_centre|fitness_centre|pitch|swimming_pool"](around:%d,%.6f,%.6f);
+                  way["leisure"~"sports_centre|fitness_centre|pitch|swimming_pool"](around:%d,%.6f,%.6f);
+                  node["amenity"~"restaurant|cafe|fast_food"](around:%d,%.6f,%.6f);
+                );
+                out body center;
+                """,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon,
+                SEARCH_RADIUS_METERS, lat, lon
+        );
+    }
+
+    @SuppressWarnings("unchecked")
+    private String formatResults(Map response,
+                                 String streetAddress, String zipcode, String city) {
+        List<Map> elements = (List<Map>) response.get("elements");
+        if (elements == null || elements.isEmpty()) {
+            return String.format("Ei löydetty lähipalveluja %d metrin säteeltä osoitteesta %s.",
+                    SEARCH_RADIUS_METERS, streetAddress);
+        }
+
+        // Ryhmitellään palvelut kategorioittain
+        Map<String, List<String>> categories = new LinkedHashMap<>();
+        categories.put("Ruokakaupat", new ArrayList<>());
+        categories.put("Koulut ja päiväkodit", new ArrayList<>());
+        categories.put("Julkinen liikenne", new ArrayList<>());
+        categories.put("Liikuntapaikat", new ArrayList<>());
+        categories.put("Ravintolat ja kahvilat", new ArrayList<>());
+
+        for (Map element : elements) {
+            Map<String, String> tags = (Map<String, String>) element.getOrDefault("tags", Map.of());
+            String name = tags.getOrDefault("name", null);
+            if (name == null || name.isBlank()) continue;
+
+            String shop = tags.getOrDefault("shop", "");
+            String amenity = tags.getOrDefault("amenity", "");
+            String publicTransport = tags.getOrDefault("public_transport", "");
+            String highway = tags.getOrDefault("highway", "");
+            String railway = tags.getOrDefault("railway", "");
+            String leisure = tags.getOrDefault("leisure", "");
+
+            if (shop.matches("supermarket|convenience")) {
+                categories.get("Ruokakaupat").add(name);
+            } else if (amenity.matches("school|kindergarten")) {
+                categories.get("Koulut ja päiväkodit").add(name);
+            } else if (publicTransport.matches("stop_position|station")
+                    || highway.equals("bus_stop")
+                    || railway.matches("subway_entrance|tram_stop")) {
+                categories.get("Julkinen liikenne").add(name);
+            } else if (leisure.matches("sports_centre|fitness_centre|pitch|swimming_pool")) {
+                categories.get("Liikuntapaikat").add(name);
+            } else if (amenity.matches("restaurant|cafe|fast_food")) {
+                categories.get("Ravintolat ja kahvilat").add(name);
+            }
+        }
+
+        // Rakennetaan vastaus
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("Lähipalvelut (%dm säteellä osoitteesta %s, %s %s):\n\n",
+                SEARCH_RADIUS_METERS, streetAddress, zipcode, city));
+
+        boolean anyFound = false;
+        for (Map.Entry<String, List<String>> entry : categories.entrySet()) {
+            List<String> items = entry.getValue().stream()
+                    .distinct()
+                    .limit(5)
+                    .collect(Collectors.toList());
+
+            if (!items.isEmpty()) {
+                anyFound = true;
+                sb.append(entry.getKey()).append(":\n");
+                items.forEach(item -> sb.append("- ").append(item).append("\n"));
+                sb.append("\n");
+            }
+        }
+
+        if (!anyFound) {
+            sb.append("Ei nimettyjä palveluja löydetty lähialueelta.");
+        }
+
+        return sb.toString();
+    }
+}=== src/main/java/com/vuokraappi/ai/ApartmentListingAgent.java ===
+package com.vuokraappi.ai;
+
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.V;
+
+/**
+ * AI-agentti asuntoilmoitusten generointiin.
+ *
+ * LangChain4j luo tästä interfacesta automaattisesti toteutuksen,
+ * joka hoitaa tool call -silmukan mallin kanssa.
+ *
+ * @see AiServices
+ */
+public interface ApartmentListingAgent {
+
+    @SystemMessage("""
+            Olet asiantunteva kiinteistövälittäjä Suomessa. Tehtäväsi on auttaa
+            vuokranantajia luomaan houkuttelevia vuokrailmoituksia ja arvioimaan
+            sopivaa vuokratasoa.
+
+            Käytä aina käytettävissä olevia työkaluja kerätäksesi tietoa:
+            - Hae vastaavien asuntojen vuokratiedot vertailua varten
+            - Hae Tilastokeskuksen tilastot postinumeroalueelta
+            - Hae kaupunginosa- ja palvelutiedot sijainnin perusteella
+
+            Kirjoita ilmoitusteksti suomeksi, ammattimaisesti mutta lämpimästi.
+            Perustele vuokrasuositus aina datalla.
+            """)
+    @UserMessage("""
+            Luo vuokrailmoitus seuraavilla tiedoilla:
+
+            Postinumero: {{zipcode}}
+            Kaupunki: {{city}}
+            Katuosoite: {{streetAddress}}
+            Huoneluku: {{rooms}}
+            Pinta-ala: {{size}} m²
+            Kerros: {{floor}}
+            Rakennusvuosi: {{buildYear}}
+            Lisätiedot: {{additionalInfo}}
+
+            Hae lähipalvelut katuosoitteen ja postinumeron perusteella mahdollisimman tarkasti.
+
+            Palauta vastaus JSON-muodossa:
+            {
+              "listingText": "...",
+              "rentSuggestion": {
+                "min": 000,
+                "max": 000,
+                "recommended": 000,
+                "reasoning": "..."
+              }
+            }
+            """)
+    String generateListing(
+            @V("zipcode") String zipcode,
+            @V("city") String city,
+            @V("streetAddress") String streetAddress,
+            @V("rooms") int rooms,
+            @V("size") double size,
+            @V("floor") int floor,
+            @V("buildYear") int buildYear,
+            @V("additionalInfo") String additionalInfo
+    );
+}=== src/main/java/com/vuokraappi/ai/ListingTools.java ===
+package com.vuokraappi.ai;
+
+import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.P;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+/**
+ * Työkalut, joita AI-agentti voi kutsua ilmoituksen generointiprosessin aikana.
+ *
+ * LangChain4j tunnistaa @Tool-annotoidut metodit automaattisesti
+ * ja antaa mallin kutsua niitä tarpeen mukaan.
+ */
+@Component
+@RequiredArgsConstructor
+@Slf4j
+public class ListingTools {
+
+    private final SimilarApartmentsTool similarApartmentsTool;
+    private final StatisticsFinlandTool statisticsFinlandTool;
+    private final NeighborhoodTool neighborhoodTool;
+
+    @Tool("Hae vastaavien vuokra-asuntojen hintatiedot samalta postinumeroalueelta. " +
+          "Käytä tätä vuokratason vertailuun.")
+    public String searchSimilarApartments(
+            @P("Postinumero") String zipcode,
+            @P("Huoneluku") int rooms,
+            @P("Minimikoko neliömetreinä") double minSize,
+            @P("Maksimikoko neliömetreinä") double maxSize
+    ) {
+        log.info("Agent calling searchSimilarApartments: zipcode={}, rooms={}", zipcode, rooms);
+        return similarApartmentsTool.search(zipcode, rooms, minSize, maxSize);
+    }
+
+    @Tool("Hae Tilastokeskuksen viralliset vuokratilastot postinumeroalueelta. " +
+          "Palauttaa mediaanivuokran ja neliövuokran tilastot.")
+    public String fetchStatisticsFinland(
+            @P("Postinumero") String zipcode
+    ) {
+        log.info("Agent calling fetchStatisticsFinland: zipcode={}", zipcode);
+        return statisticsFinlandTool.fetch(zipcode);
+    }
+
+    @Tool("Hae tietoja kaupunginosasta ja lähimmistä palveluista katuosoitteen perusteella. " +
+          "Palauttaa lähikaupat, koulut, pysäkit ja muut palvelut.")
+    public String fetchNeighborhoodInfo(
+            @P("Postinumero") String zipcode,
+            @P("Kaupunki") String city,
+            @P("Katuosoite") String streetAddress
+    ) {
+        log.info("Agent calling fetchNeighborhoodInfo: zipcode={}, city={}, streetAddress={}",
+                zipcode, city, streetAddress);
+        return neighborhoodTool.fetch(zipcode, city, streetAddress);
+    }
+}=== src/main/java/com/vuokraappi/ai/SimilarApartmentsTool.java ===
+package com.vuokraappi.ai;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+/**
+ * Hakee vastaavien asuntojen hintatiedot.
+ *
+ * TODO: Toteuta oikea haku kun Apartment-entiteetti ja -repository ovat valmiit.
+ * Tällä hetkellä palauttaa stub-datan kehitystä varten.
+ */
+@Component
+@Slf4j
+public class SimilarApartmentsTool {
+
+    public String search(String postalCode, int rooms, double minSize, double maxSize) {
+        log.info("Searching similar apartments: postalCode={}, rooms={}, size={}-{}",
+                postalCode, rooms, minSize, maxSize);
+
+        // TODO: Korvaa oikealla kyselyllä, esim:
+        // return apartmentRepository
+        //     .findSimilar(postalCode, rooms, minSize, maxSize)
+        //     .stream()
+        //     .map(a -> String.format("%s m², %d h, %.0f€/kk", a.getSize(), a.getRooms(), a.getRent()))
+        //     .collect(Collectors.joining("\n"));
+
+        // Stub-data kehitystä varten
+        return String.format("""
+                Löydettiin 3 vastaavaa asuntoa postinumeroalueelta %s:
+                - %d h + k, %.0f m², 900 €/kk
+                - %d h + k, %.0f m², 950 €/kk
+                - %d h + k, %.0f m², 875 €/kk
+                """, postalCode, rooms, minSize + 5, rooms, minSize, rooms, maxSize - 5);
+    }
+}=== src/main/java/com/vuokraappi/exception/UserNotFoundException.java ===
+package com.vuokraappi.exception;
+
+public class UserNotFoundException extends RuntimeException {
+    
+    public UserNotFoundException(String message) {
+        super(message);
+    }
+}
+=== src/main/java/com/vuokraappi/exception/GraphApiException.java ===
+package com.vuokraappi.exception;
+
+public class GraphApiException extends RuntimeException {
+    
+    public GraphApiException(String message) {
+        super(message);
+    }
+    
+    public GraphApiException(String message, Throwable cause) {
+        super(message, cause);
+    }
+}
+=== src/main/java/com/vuokraappi/exception/ResourceNotFoundException.java ===
+package com.vuokraappi.exception;
+
+public class ResourceNotFoundException extends RuntimeException {
+    public ResourceNotFoundException(String message) {
+        super(message);
+    }
+}=== src/main/java/com/vuokraappi/exception/UserAlreadyExistsException.java ===
+package com.vuokraappi.exception;
+
+public class UserAlreadyExistsException extends RuntimeException {
+    
+    public UserAlreadyExistsException(String message) {
+        super(message);
+    }
+}
+=== src/main/java/com/vuokraappi/exception/UnauthorizedException.java ===
+package com.vuokraappi.exception;
+
+public class UnauthorizedException extends RuntimeException {
+    public UnauthorizedException(String message) {
+        super(message);
+    }
+}=== src/main/java/com/vuokraappi/exception/GlobalExceptionHandler.java ===
+package com.vuokraappi.exception;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.Map;
+
+@RestControllerAdvice
+@Slf4j
+public class GlobalExceptionHandler {
+    
+    @ExceptionHandler(UserAlreadyExistsException.class)
+    public ResponseEntity<ErrorResponse> handleUserAlreadyExists(
+            UserAlreadyExistsException ex) {
+        
+        log.error("User already exists: {}", ex.getMessage());
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.CONFLICT.value(),
+            ex.getMessage(),
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
+    }
+    
+    @ExceptionHandler(UserNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleUserNotFound(
+            UserNotFoundException ex) {
+        
+        log.error("User not found: {}", ex.getMessage());
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.NOT_FOUND.value(),
+            ex.getMessage(),
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+    
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleResourceNotFound(
+            ResourceNotFoundException ex) {
+        
+        log.error("Resource not found: {}", ex.getMessage());
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.NOT_FOUND.value(),
+            ex.getMessage(),
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
+    }
+    
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ErrorResponse> handleUnauthorized(
+            UnauthorizedException ex) {
+        
+        log.error("Unauthorized access: {}", ex.getMessage());
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.FORBIDDEN.value(),
+            ex.getMessage(),
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(error);
+    }
+    
+    @ExceptionHandler(GraphApiException.class)
+    public ResponseEntity<ErrorResponse> handleGraphApiException(
+            GraphApiException ex) {
+        
+        log.error("Graph API error: {}", ex.getMessage());
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.BAD_GATEWAY.value(),
+            "Failed to communicate with Microsoft Entra ID: " + ex.getMessage(),
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(error);
+    }
+    
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ErrorResponse> handleValidationExceptions(
+            MethodArgumentNotValidException ex) {
+        
+        Map<String, String> errors = new HashMap<>();
+        ex.getBindingResult().getAllErrors().forEach((error) -> {
+            String fieldName = ((FieldError) error).getField();
+            String errorMessage = error.getDefaultMessage();
+            errors.put(fieldName, errorMessage);
+        });
+        
+        log.error("Validation error: {}", errors);
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.BAD_REQUEST.value(),
+            "Validation failed",
+            LocalDateTime.now(),
+            errors
+        );
+        
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+    
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ErrorResponse> handleGenericException(Exception ex) {
+        
+        log.error("Unexpected error occurred", ex);
+        
+        ErrorResponse error = new ErrorResponse(
+            HttpStatus.INTERNAL_SERVER_ERROR.value(),
+            "An unexpected error occurred",
+            LocalDateTime.now()
+        );
+        
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+    }
+}=== src/main/java/com/vuokraappi/exception/ErrorResponse.java ===
+package com.vuokraappi.exception;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.Map;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ErrorResponse {
+    private int status;
+    private String message;
+    private LocalDateTime timestamp;
+    private Map<String, String> errors;
+    
+    // Konstruktori ilman errors-mappia
+    public ErrorResponse(int status, String message, LocalDateTime timestamp) {
+        this.status = status;
+        this.message = message;
+        this.timestamp = timestamp;
+    }
+}=== src/main/java/com/vuokraappi/entity/Landlord.java ===
+package com.vuokraappi.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import lombok.ToString;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+@Entity
+@Table(name = "landlords")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Landlord {
+    
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    private UUID id;
+    
+    @OneToOne
+    @JoinColumn(name = "id", referencedColumnName = "id")
+    private User user;
+    
+    @Column(name = "company_name", length = 200)
+    private String companyName;
+    
+    @Column(name = "business_id", length = 50)
+    private String businessId;
+    
+    @Column(name = "bank_account", length = 100)
+    private String bankAccount;
+    
+    @OneToMany(mappedBy = "owner", cascade = CascadeType.ALL, orphanRemoval = true)
+    @ToString.Exclude
+    private List<Apartment> apartments = new ArrayList<>();
+    
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+}=== src/main/java/com/vuokraappi/entity/Apartment.java ===
+package com.vuokraappi.entity;
+
+import jakarta.persistence.*;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Entity
+@Table(name = "apartments")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Apartment {
+    
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+    
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id", nullable = false)
+    @NotNull(message = "Owner is required")
+    private Landlord owner;
+    
+    @NotBlank(message = "Zip code is required")
+    @Column(nullable = false)
+    private String zipcode;
+    
+    @NotBlank(message = "Street address is required")
+    @Column(nullable = false)
+    private String streetAddress;
+    
+    @NotBlank(message = "City is required")
+    @Column(nullable = false)
+    private String city;
+    
+    @NotBlank(message = "Region is required")
+    @Column(nullable = false)
+    private String region;
+    
+    @NotNull(message = "Size is required")
+    @Column(nullable = false)
+    private Double size;
+    
+    @NotNull(message = "Longitude is required")
+    @Column(nullable = false)
+    private Double longitude;
+    
+    @NotNull(message = "Latitude is required")
+    @Column(nullable = false)
+    private Double latitude;
+    
+    @NotNull(message = "Rent is required")
+    @Column(nullable = false, precision = 10, scale = 2)
+    private BigDecimal rent;
+}=== src/main/java/com/vuokraappi/entity/User.java ===
+package com.vuokraappi.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "users")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class User {
+    
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    private UUID id;
+    
+    @Enumerated(EnumType.STRING)
+    @Column(name = "role", nullable = false, length = 20)
+    private UserRole role;
+    
+    @Column(name = "first_name", length = 100)
+    private String firstName;
+    
+    @Column(name = "last_name", length = 100)
+    private String lastName;
+    
+    @Column(name = "phone_number", length = 20)
+    private String phoneNumber;
+    
+    @Column(name = "email", length = 255)
+    private String email;
+    
+    @Column(name = "introduction", length = 2000)
+    private String introduction;
+    
+    @Column(name = "date_of_birth")
+    private LocalDate dateOfBirth;
+    
+    @Column(name = "personal_identity_code", length = 25)
+    private String personalIdentityCode;
+    
+    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY, optional = true)
+    private Tenant tenant;
+    
+    @OneToOne(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true, fetch = FetchType.LAZY, optional = true)
+    private Landlord landlord;
+    
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+    
+    @Column(name = "is_active", nullable = false)
+    private Boolean isActive = true;
+}
+=== src/main/java/com/vuokraappi/entity/UserRole.java ===
+package com.vuokraappi.entity;
+
+public enum UserRole {
+    TENANT,
+    LANDLORD
+}
+=== src/main/java/com/vuokraappi/entity/Tenant.java ===
+package com.vuokraappi.entity;
+
+import jakarta.persistence.*;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "tenants")
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class Tenant {
+    
+    @Id
+    @Column(name = "id", updatable = false, nullable = false)
+    private UUID id;
+    
+    @OneToOne
+    @JoinColumn(name = "id", referencedColumnName = "id")
+    private User user;
+    
+    @Column(name = "occupation", length = 100)
+    private String occupation;
+    
+    @Column(name = "monthly_income")
+    private Integer monthlyIncome;
+    
+    @Column(name = "current_address", length = 255)
+    private String currentAddress;
+    
+    @Column(name = "pet", length = 100)
+    private String pet;
+    
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+    
+    @UpdateTimestamp
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+}
+=== src/main/java/com/vuokraappi/repository/ApartmentSpecification.java ===
+package com.vuokraappi.repository;
+
+import com.vuokraappi.dto.ApartmentSearchCriteria;
+import com.vuokraappi.entity.Apartment;
+import jakarta.persistence.criteria.Predicate;
+import org.springframework.data.jpa.domain.Specification;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * JPA Specification builder asuntojen hakua varten.
+ * Rakentaa dynaamisesti SQL-kyselyt annettujen hakukriteerien perusteella.
+ */
+public class ApartmentSpecification {
+
+    /**
+     * Rakentaa Specification hakukriteereistä.
+     * Vain ei-null kriteerit lisätään hakuun.
+     */
+    public static Specification<Apartment> withCriteria(ApartmentSearchCriteria criteria) {
+        return (root, query, criteriaBuilder) -> {
+            List<Predicate> predicates = new ArrayList<>();
+
+            // Exact matches
+            if (criteria.getZipcode() != null && !criteria.getZipcode().isEmpty()) {
+                predicates.add(criteriaBuilder.equal(root.get("zipcode"), criteria.getZipcode()));
+            }
+
+            if (criteria.getCity() != null && !criteria.getCity().isEmpty()) {
+                predicates.add(criteriaBuilder.like(
+                    criteriaBuilder.lower(root.get("city")),
+                    "%" + criteria.getCity().toLowerCase() + "%"
+                ));
+            }
+
+            if (criteria.getRegion() != null && !criteria.getRegion().isEmpty()) {
+                predicates.add(criteriaBuilder.like(
+                    criteriaBuilder.lower(root.get("region")),
+                    "%" + criteria.getRegion().toLowerCase() + "%"
+                ));
+            }
+
+            // Size range
+            if (criteria.getMinSize() != null) {
+                predicates.add(criteriaBuilder.greaterThanOrEqualTo(
+                    root.get("size"), criteria.getMinSize()
+                ));
+            }
+
+            if (criteria.getMaxSize() != null) {
+                predicates.add(criteriaBuilder.lessThanOrEqualTo(
+                    root.get("size"), criteria.getMaxSize()
+                ));
+            }
+
+            // Rent range
+            if (criteria.getMinRent() != null) {
+                predicates.add(criteriaBuilder.greaterThanOrEqualTo(
+                    root.get("rent"), criteria.getMinRent()
+                ));
+            }
+
+            if (criteria.getMaxRent() != null) {
+                predicates.add(criteriaBuilder.lessThanOrEqualTo(
+                    root.get("rent"), criteria.getMaxRent()
+                ));
+            }
+
+            // Location-based search (Haversine formula for distance calculation)
+            if (criteria.getLatitude() != null && 
+                criteria.getLongitude() != null && 
+                criteria.getRadiusKm() != null) {
+                
+                // Haversine formula approximation:
+                // distance = ACOS(SIN(lat1) * SIN(lat2) + COS(lat1) * COS(lat2) * COS(lon2 - lon1)) * 6371
+                // where 6371 is Earth's radius in km
+                
+                double lat = Math.toRadians(criteria.getLatitude());
+                double lon = Math.toRadians(criteria.getLongitude());
+                double radius = criteria.getRadiusKm();
+                
+                // Yksinkertaistettu laatikkorajaus ensin (nopeampi)
+                // ~111 km per degree latitude, ~111 * cos(lat) km per degree longitude
+                double latDelta = radius / 111.0;
+                double lonDelta = radius / (111.0 * Math.cos(lat));
+                
+                predicates.add(criteriaBuilder.between(
+                    root.get("latitude"),
+                    criteria.getLatitude() - latDelta,
+                    criteria.getLatitude() + latDelta
+                ));
+                
+                predicates.add(criteriaBuilder.between(
+                    root.get("longitude"),
+                    criteria.getLongitude() - lonDelta,
+                    criteria.getLongitude() + lonDelta
+                ));
+                
+                // Tarkempi etäisyystarkistus voitaisiin tehdä sovellustasolla
+                // tai native SQL-kyselyllä jos tarvitaan täydellistä tarkkuutta
+            }
+
+            return criteriaBuilder.and(predicates.toArray(new Predicate[0]));
+        };
+    }
+}=== src/main/java/com/vuokraappi/repository/TenantRepository.java ===
+package com.vuokraappi.repository;
+
+import com.vuokraappi.entity.Tenant;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.stereotype.Repository;
+
+import java.util.UUID;
+
+@Repository
+public interface TenantRepository extends JpaRepository<Tenant, UUID>, JpaSpecificationExecutor<Tenant> {
+}=== src/main/java/com/vuokraappi/repository/ApartmentRepository.java ===
+package com.vuokraappi.repository;
+
+import com.vuokraappi.entity.Apartment;
+import com.vuokraappi.entity.Landlord;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.stereotype.Repository;
+
+import java.util.List;
+import java.util.UUID;
+
+@Repository
+public interface ApartmentRepository extends JpaRepository<Apartment, UUID>, JpaSpecificationExecutor<Apartment> {
+    List<Apartment> findByOwner(Landlord owner);
+}=== src/main/java/com/vuokraappi/repository/LandlordRepository.java ===
+package com.vuokraappi.repository;
+
+import com.vuokraappi.entity.Landlord;
+import com.vuokraappi.entity.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface LandlordRepository extends JpaRepository<Landlord, UUID> {
+    Optional<Landlord> findByUser(User user);
+}=== src/main/java/com/vuokraappi/repository/UserRepository.java ===
+package com.vuokraappi.repository;
+
+import com.vuokraappi.entity.User;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+
+import java.util.Optional;
+import java.util.UUID;
+
+@Repository
+public interface UserRepository extends JpaRepository<User, UUID> {
+    
+    boolean existsById(UUID id);
+    
+    @Query("SELECT u FROM User u " +
+           "LEFT JOIN FETCH u.tenant " +
+           "LEFT JOIN FETCH u.landlord " +
+           "WHERE u.id = :id")
+    Optional<User> findByIdWithDetails(@Param("id") UUID id);
+
+    Optional<User> findByEmail(String email);
+}
+=== src/main/java/com/vuokraappi/controller/ApartmentController.java ===
+package com.vuokraappi.controller;
+
+import com.vuokraappi.config.UserPrincipal;
+import com.vuokraappi.dto.ApartmentRequest;
+import com.vuokraappi.dto.ApartmentResponse;
+import com.vuokraappi.dto.ApartmentSearchCriteria;
+import com.vuokraappi.entity.User;
+import com.vuokraappi.service.ApartmentService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/v1/apartments")
+@RequiredArgsConstructor
+public class ApartmentController {
+    
+    private final ApartmentService apartmentService;
+    
+    @GetMapping
+    public Mono<ResponseEntity<List<ApartmentResponse>>> getAllApartments() {
+        return Mono.fromCallable(() -> apartmentService.getAllApartments())
+                .map(ResponseEntity::ok);
+    }
+
+    /**
+     * Hakee asuntoja query parametrien perusteella.
+     * Kaikki parametrit ovat optionaalisia.
+     * 
+     * Esimerkki: GET /apartments/search?city=Helsinki&minSize=40&maxRent=1200
+     */
+    @GetMapping("/search")
+    public Mono<ResponseEntity<List<ApartmentResponse>>> searchApartments(
+            @RequestParam(required = false) String zipcode,
+            @RequestParam(required = false) String city,
+            @RequestParam(required = false) String region,
+            @RequestParam(required = false) Double minSize,
+            @RequestParam(required = false) Double maxSize,
+            @RequestParam(required = false) BigDecimal minRent,
+            @RequestParam(required = false) BigDecimal maxRent,
+            @RequestParam(required = false) Double latitude,
+            @RequestParam(required = false) Double longitude,
+            @RequestParam(required = false) Double radiusKm) {
+        
+        ApartmentSearchCriteria criteria = ApartmentSearchCriteria.builder()
+                .zipcode(zipcode)
+                .city(city)
+                .region(region)
+                .minSize(minSize)
+                .maxSize(maxSize)
+                .minRent(minRent)
+                .maxRent(maxRent)
+                .latitude(latitude)
+                .longitude(longitude)
+                .radiusKm(radiusKm)
+                .build();
+        
+        return Mono.fromCallable(() -> apartmentService.searchApartments(criteria))
+                .map(ResponseEntity::ok);
+    }
+    
+    @GetMapping("/{id}")
+    public Mono<ResponseEntity<ApartmentResponse>> getApartmentById(@PathVariable UUID id) {
+        return Mono.fromCallable(() -> apartmentService.getApartmentById(id))
+                .map(ResponseEntity::ok);
+    }
+    
+    @PostMapping
+    public Mono<ResponseEntity<ApartmentResponse>> createApartment(
+            @Valid @RequestBody ApartmentRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return Mono.fromCallable(() -> apartmentService.createApartment(request, principal.getUser()))
+                .map(apartment -> ResponseEntity.status(HttpStatus.CREATED).body(apartment));
+    }
+    
+    @PatchMapping("/{id}")
+    public Mono<ResponseEntity<ApartmentResponse>> updateApartment(
+            @PathVariable UUID id,
+            @Valid @RequestBody ApartmentRequest request,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return Mono.fromCallable(() -> apartmentService.updateApartment(id, request, principal.getUser()))
+                .map(ResponseEntity::ok);
+    }
+    
+    @DeleteMapping("/{id}")
+    public Mono<ResponseEntity<Void>> deleteApartment(
+            @PathVariable UUID id,
+            @AuthenticationPrincipal UserPrincipal principal) {
+        return Mono.fromRunnable(() -> apartmentService.deleteApartment(id, principal.getUser()))
+                .then(Mono.just(ResponseEntity.noContent().<Void>build()));
+    }
+}=== src/main/java/com/vuokraappi/controller/ListingController.java ===
+package com.vuokraappi.controller;
+
+import com.vuokraappi.ai.ApartmentListingAgent;
+import com.vuokraappi.dto.listing.GenerateListingRequest;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/listings")
+@RequiredArgsConstructor
+@Slf4j
+public class ListingController {
+
+    private final ApartmentListingAgent apartmentListingAgent;
+
+    /**
+     * Generoi vuokrailmoituksen ja vuokrasuosituksen asunnon perustietojen perusteella.
+     *
+     * POST /listings/generate
+     *
+     * Palauttaa JSON-merkkijonon suoraan agentilta.
+     * TODO: Parsoi JSON ListingResponse-DTO:ksi kun rakenne on vakiintunut.
+     */
+    @PostMapping("/v1/generate")
+    public ResponseEntity<String> generateListing(
+            @Valid @RequestBody GenerateListingRequest request) {
+
+        log.info("Generating listing for apartment: zipcode={}, rooms={}, size={}",
+                request.getZipcode(), request.getRooms(), request.getSize());
+
+        String result = apartmentListingAgent.generateListing(
+                request.getZipcode(),
+                request.getCity(),
+                request.getStreetAddress(),
+                request.getRooms(),
+                request.getSize(),
+                request.getFloor(),
+                request.getBuildYear(),
+                request.getAdditionalInfo() != null ? request.getAdditionalInfo() : ""
+        );
+
+        log.info("Listing generated successfully for zipcode={}", request.getZipcode());
+
+        return ResponseEntity.ok(result);
+    }
+}=== src/main/java/com/vuokraappi/controller/UserController.java ===
+package com.vuokraappi.controller;
+
+import com.vuokraappi.dto.ApartmentResponse;
+import com.vuokraappi.dto.TenantResponse;
+import com.vuokraappi.dto.UserDetailResponse;
+import com.vuokraappi.dto.UserRegistrationRequest;
+import com.vuokraappi.dto.UserResponse;
+import com.vuokraappi.dto.UserUpdateRequest;
+import com.vuokraappi.service.ApartmentService;
+import com.vuokraappi.service.TenantSearchService;
+import com.vuokraappi.service.UserService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/v1/users")
+@RequiredArgsConstructor
+@Slf4j
+public class UserController {
+    
+    private final UserService userService;
+    private final ApartmentService apartmentService;
+    private final TenantSearchService tenantSearchService;
+    
+    @PostMapping
+    public ResponseEntity<UserResponse> registerUser(
+            @Valid @RequestBody UserRegistrationRequest request) {
+        
+        log.info("Received user registration request for ID: {}", request.getId());
+        
+        UserResponse response = userService.registerUser(request);
+        
+        return ResponseEntity.status(HttpStatus.CREATED).body(response);
+    }
+    
+    @GetMapping("/{userId}")
+    public ResponseEntity<UserDetailResponse> getUser(@PathVariable UUID userId) {
+        
+        log.info("Received request to fetch user with ID: {}", userId);
+        
+        UserDetailResponse response = userService.getUser(userId);
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    @GetMapping("/{userId}/apartments")
+    public ResponseEntity<List<ApartmentResponse>> getUserApartments(@PathVariable UUID userId) {
+        
+        log.info("Received request to fetch apartments for user: {}", userId);
+        
+        List<ApartmentResponse> apartments = apartmentService.getApartmentsByUserId(userId);
+        
+        return ResponseEntity.ok(apartments);
+    }
+    
+    @GetMapping("/{userId}/tenants/search")
+    public ResponseEntity<List<TenantResponse>> searchTenants(
+            @PathVariable UUID userId,
+            @RequestParam(required = false) Integer minIncome,
+            @RequestParam(required = false) Integer maxIncome,
+            @RequestParam(required = false) String occupation,
+            @RequestParam(required = false) Boolean hasPet,
+            @RequestParam(required = false) Integer minAge,
+            @RequestParam(required = false) Integer maxAge,
+            @RequestParam(required = false) String city) {
+
+        log.info("Received tenant search request from landlord: {}", userId);
+
+        // TODO: Varmista että userId on landlord (jos halutaan rajoittaa)
+
+        List<TenantResponse> tenants = tenantSearchService.searchTenants(
+                minIncome, maxIncome, occupation, hasPet, minAge, maxAge, city);
+
+        return ResponseEntity.ok(tenants);
+    }
+    
+    @PatchMapping("/{userId}")
+    public ResponseEntity<UserDetailResponse> updateUser(
+            @PathVariable UUID userId,
+            @Valid @RequestBody UserUpdateRequest request) {
+        
+        log.info("Received request to update user with ID: {}", userId);
+        
+        UserDetailResponse response = userService.updateUser(userId, request);
+        
+        return ResponseEntity.ok(response);
+    }
+    
+    @DeleteMapping("/{userId}")
+    public ResponseEntity<Void> deleteUser(@PathVariable UUID userId) {
+        
+        log.info("Received user deletion request for ID: {}", userId);
+        
+        userService.deleteUser(userId);
+        
+        return ResponseEntity.noContent().build();
+    }
+}=== src/main/java/com/vuokraappi/service/GraphApiService.java ===
+package com.vuokraappi.service;
+
+import com.vuokraappi.config.MicrosoftGraphProperties;
+import com.vuokraappi.exception.GraphApiException;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class GraphApiService {
+    
+    private final WebClient graphApiWebClient;
+    private final MicrosoftGraphProperties graphProperties;
+    
+    @Value("${azure.application.app-client-id:00000000-0000-0000-0000-000000000000}")
+    private String appClientId;
+    
+    /**
+     * Asettaa käyttäjälle App Rolen Microsoft Entra ID:ssä
+     */
+    public void assignUserRole(UUID userId, String roleName) {
+        log.info("Assigning role {} to user {} in Microsoft Entra ID", roleName, userId);
+        
+        try {
+            String servicePrincipalId = getServicePrincipalId();
+            String roleId = getAppRoleId(servicePrincipalId, roleName);
+            removeExistingAppRoleAssignments(userId, servicePrincipalId);
+            
+            Map<String, Object> body = new HashMap<>();
+            body.put("principalId", userId.toString());
+            body.put("resourceId", servicePrincipalId);
+            body.put("appRoleId", roleId);
+            
+            graphApiWebClient
+                .post()
+                .uri("/users/{userId}/appRoleAssignments", userId.toString())
+                .bodyValue(body)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+            
+            log.info("Successfully assigned role {} to user {} in Microsoft Entra ID", roleName, userId);
+            
+        } catch (WebClientResponseException e) {
+            log.error("Failed to assign app role in Microsoft Entra ID: {} - {}", 
+                     e.getStatusCode(), e.getResponseBodyAsString());
+            throw new GraphApiException(
+                String.format("Failed to assign role %s to user %s in Entra ID: %s", 
+                    roleName, userId, e.getMessage()), e);
+        } catch (Exception e) {
+            log.error("Unexpected error while assigning app role in Microsoft Entra ID", e);
+            throw new GraphApiException(
+                String.format("Unexpected error while assigning role %s to user %s in Entra ID", 
+                    roleName, userId), e);
+        }
+    }
+    
+    private String getServicePrincipalId() {
+        log.debug("Fetching service principal ID for MAIN app client ID: {}", appClientId);
+        
+        try {
+            Map<String, Object> response = graphApiWebClient
+                .get()
+                .uri(uriBuilder -> uriBuilder
+                    .path("/servicePrincipals")
+                    .queryParam("$filter", "appId eq '" + appClientId + "'")
+                    .build())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            if (response != null && response.containsKey("value")) {
+                List<?> servicePrincipals = (List<?>) response.get("value");
+                if (!servicePrincipals.isEmpty()) {
+                    Map<String, Object> sp = (Map<String, Object>) servicePrincipals.get(0);
+                    String spId = (String) sp.get("id");
+                    log.debug("Found service principal ID: {}", spId);
+                    return spId;
+                }
+            }
+            
+            throw new GraphApiException("Service principal not found for MAIN app client ID: " + appClientId);
+            
+        } catch (WebClientResponseException e) {
+            log.error("Failed to fetch service principal: {} - {}", 
+                     e.getStatusCode(), e.getResponseBodyAsString());
+            throw new GraphApiException("Failed to fetch service principal", e);
+        }
+    }
+    
+    private String getAppRoleId(String servicePrincipalId, String roleName) {
+        log.debug("Fetching app role ID for role: {}", roleName);
+        
+        try {
+            Map<String, Object> response = graphApiWebClient
+                .get()
+                .uri("/servicePrincipals/{id}", servicePrincipalId)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            if (response != null && response.containsKey("appRoles")) {
+                List<?> appRoles = (List<?>) response.get("appRoles");
+                for (Object roleObj : appRoles) {
+                    Map<String, Object> role = (Map<String, Object>) roleObj;
+                    String value = (String) role.get("value");
+                    if (roleName.equalsIgnoreCase(value)) {
+                        String roleId = (String) role.get("id");
+                        log.debug("Found app role ID {} for role {}", roleId, roleName);
+                        return roleId;
+                    }
+                }
+            }
+            
+            throw new GraphApiException("App role not found: " + roleName);
+            
+        } catch (WebClientResponseException e) {
+            log.error("Failed to fetch app roles: {} - {}", 
+                     e.getStatusCode(), e.getResponseBodyAsString());
+            throw new GraphApiException("Failed to fetch app roles", e);
+        }
+    }
+    
+    private void removeExistingAppRoleAssignments(UUID userId, String servicePrincipalId) {
+        log.debug("Removing existing app role assignments for user: {}", userId);
+        
+        try {
+            Map<String, Object> response = graphApiWebClient
+                .get()
+                .uri(uriBuilder -> uriBuilder
+                    .path("/users/{userId}/appRoleAssignments")
+                    .queryParam("$filter", "resourceId eq " + servicePrincipalId)
+                    .build(userId.toString()))
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            if (response != null && response.containsKey("value")) {
+                List<?> assignments = (List<?>) response.get("value");
+                for (Object assignmentObj : assignments) {
+                    Map<String, Object> assignment = (Map<String, Object>) assignmentObj;
+                    String assignmentId = (String) assignment.get("id");
+                    
+                    graphApiWebClient
+                        .delete()
+                        .uri("/users/{userId}/appRoleAssignments/{assignmentId}", 
+                             userId.toString(), assignmentId)
+                        .retrieve()
+                        .toBodilessEntity()
+                        .block();
+                    
+                    log.debug("Removed app role assignment: {}", assignmentId);
+                }
+            }
+            
+        } catch (WebClientResponseException.NotFound e) {
+            log.debug("No existing app role assignments found");
+        } catch (WebClientResponseException e) {
+            log.warn("Failed to remove existing app role assignments: {} - {}", 
+                    e.getStatusCode(), e.getResponseBodyAsString());
+        }
+    }
+    
+    public boolean userExistsInAzureAd(UUID userId) {
+        log.info("Checking if user {} exists in Microsoft Entra ID", userId);
+        
+        try {
+            Map<String, Object> user = graphApiWebClient
+                .get()
+                .uri("/users/{userId}", userId.toString())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            boolean exists = user != null;
+            log.info("User {} {} in Microsoft Entra ID", userId, exists ? "exists" : "does not exist");
+            return exists;
+            
+        } catch (WebClientResponseException.NotFound e) {
+            log.warn("User {} not found in Microsoft Entra ID", userId);
+            return false;
+        } catch (Exception e) {
+            log.error("Error checking if user exists in Microsoft Entra ID", e);
+            throw new GraphApiException(
+                String.format("Error checking if user %s exists in Entra ID", userId), e);
+        }
+    }
+    
+    public void deleteUserFromEntraId(UUID userId) {
+        log.info("Deleting user {} from Microsoft Entra ID", userId);
+        
+        try {
+            graphApiWebClient
+                .delete()
+                .uri("/users/{userId}", userId.toString())
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+            
+            log.info("Successfully deleted user {} from Microsoft Entra ID", userId);
+            
+        } catch (WebClientResponseException.NotFound e) {
+            log.warn("User {} not found in Microsoft Entra ID (may have been already deleted)", userId);
+        } catch (WebClientResponseException e) {
+            log.error("Failed to delete user from Microsoft Entra ID: {} - {}", 
+                     e.getStatusCode(), e.getResponseBodyAsString());
+            throw new GraphApiException(
+                String.format("Failed to delete user %s from Entra ID: %s", 
+                    userId, e.getMessage()), e);
+        } catch (Exception e) {
+            log.error("Unexpected error while deleting user from Microsoft Entra ID", e);
+            throw new GraphApiException(
+                String.format("Unexpected error while deleting user %s from Entra ID", userId), e);
+        }
+    }
+    
+    /**
+     * Päivittää käyttäjän identities-kentän Microsoft Entra ID:ssä
+     * 
+     * Turvallinen päivitysprosessi:
+     * 1. Lisää uusi email identity (käyttäjällä on nyt vanha + uusi)
+     * 2. Poista vanha email identity (jää vain uusi)
+     * 
+     * Jos vaihe 2 epäonnistuu, käyttäjä voi silti kirjautua molemmilla osoitteilla.
+     * 
+     * HUOM: Päivittää vain identities-kentän Azuressa, ei mail-kenttää.
+     * Email tallennetaan vain sovelluksen omaan tietokantaan.
+     */
+    public void updateUserEmail(UUID userId, String email) {
+        log.info("Updating identities for user {} in Microsoft Entra ID", userId);
+        
+        try {
+            // 1. Haetaan käyttäjän nykyiset identityt
+            Map<String, Object> currentUser = graphApiWebClient
+                .get()
+                .uri("/users/{userId}?$select=identities,mail", userId.toString())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            List<Map<String, Object>> existingIdentities = 
+                (List<Map<String, Object>>) currentUser.get("identities");
+            String currentEmail = (String) currentUser.get("mail");
+            
+            log.debug("Current email: {}, Existing identities: {}", currentEmail, existingIdentities);
+            
+            // 2. Tarkista onko uusi email jo identiteetissä
+            boolean emailAlreadyExists = false;
+            if (existingIdentities != null) {
+                for (Map<String, Object> identity : existingIdentities) {
+                    String signInType = (String) identity.get("signInType");
+                    String issuerAssignedId = (String) identity.get("issuerAssignedId");
+                    if ("emailAddress".equals(signInType) && email.equals(issuerAssignedId)) {
+                        emailAlreadyExists = true;
+                        log.info("Email {} already exists in identities, skipping Azure update", email);
+                        break;
+                    }
+                }
+            }
+            
+            // Jos email on jo olemassa, ei tarvitse tehdä mitään Azureen
+            if (emailAlreadyExists) {
+                log.info("Identity update skipped - email already exists in Azure");
+                return;
+            }
+            
+            // 3. Säilytä kaikki nykyiset identityt ja lisää uusi email
+            List<Map<String, Object>> updatedIdentities = new ArrayList<>();
+            if (existingIdentities != null) {
+                updatedIdentities.addAll(existingIdentities);
+            }
+            
+            // Lisää uusi email identity
+            Map<String, Object> newEmailIdentity = new HashMap<>();
+            newEmailIdentity.put("signInType", "emailAddress");
+            newEmailIdentity.put("issuer", getTenantDomain());
+            newEmailIdentity.put("issuerAssignedId", email);
+            updatedIdentities.add(newEmailIdentity);
+            
+            // 3. Lisää uusi email identity (ILMAN mail-kenttää)
+            Map<String, Object> bodyWithNewIdentity = new HashMap<>();
+            bodyWithNewIdentity.put("identities", updatedIdentities);
+            
+            log.debug("Adding new identity. Body: {}", bodyWithNewIdentity);
+            
+            graphApiWebClient
+                .patch()
+                .uri("/users/{userId}", userId.toString())
+                .bodyValue(bodyWithNewIdentity)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+            
+            log.info("Successfully added new email identity for user {}", userId);
+            
+            // 4. Haetaan päivitetyt identityt
+            Map<String, Object> updatedUser = graphApiWebClient
+                .get()
+                .uri("/users/{userId}?$select=identities", userId.toString())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            List<Map<String, Object>> currentIdentities = 
+                (List<Map<String, Object>>) updatedUser.get("identities");
+            
+            log.debug("Current identities after adding new: {}", currentIdentities);
+            
+            // 5. Poista vanhat emailAddress-tyyppiset identityt (paitsi juuri lisätty uusi)
+            List<Map<String, Object>> finalIdentities = new ArrayList<>();
+            if (currentIdentities != null) {
+                for (Map<String, Object> identity : currentIdentities) {
+                    String signInType = (String) identity.get("signInType");
+                    String issuerAssignedId = (String) identity.get("issuerAssignedId");
+                    
+                    // Säilytä jos:
+                    // - Ei ole emailAddress-tyyppi TAI
+                    // - On emailAddress JA on uusi email
+                    if (!"emailAddress".equals(signInType) || email.equals(issuerAssignedId)) {
+                        finalIdentities.add(identity);
+                    }
+                }
+            }
+            
+            // Päivitä vain identityt (poista vanhat emailit)
+            Map<String, Object> bodyRemoveOld = new HashMap<>();
+            bodyRemoveOld.put("identities", finalIdentities);
+            
+            log.debug("Removing old email identities. Body: {}", bodyRemoveOld);
+            
+            graphApiWebClient
+                .patch()
+                .uri("/users/{userId}", userId.toString())
+                .bodyValue(bodyRemoveOld)
+                .retrieve()
+                .toBodilessEntity()
+                .block();
+            
+            log.info("Successfully removed old email identities for user {}", userId);
+            
+            // 6. Vahvistetaan että päivitys onnistui
+            Map<String, Object> finalUser = graphApiWebClient
+                .get()
+                .uri("/users/{userId}?$select=identities,mail", userId.toString())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            log.info("Final state - identities: {}", 
+                    finalUser.get("identities"));
+            
+            log.info("Identities update completed successfully for user {}", userId);
+            
+        } catch (WebClientResponseException e) {
+            log.error("Failed to update identities in Microsoft Entra ID: {} - {}", 
+                     e.getStatusCode(), e.getResponseBodyAsString());
+            throw new GraphApiException(
+                String.format("Failed to update identities for user %s in Entra ID: %s", 
+                    userId, e.getMessage()), e);
+        } catch (Exception e) {
+            log.error("Unexpected error while updating identities in Microsoft Entra ID", e);
+            throw new GraphApiException(
+                String.format("Unexpected error while updating identities for user %s in Entra ID", userId), e);
+        }
+    }
+    
+    /**
+     * Hakee tenant domainin (esim. "vuokraappi.onmicrosoft.com")
+     */
+    private String getTenantDomain() {
+        return "vuokraappi.onmicrosoft.com";
+    }
+}=== src/main/java/com/vuokraappi/service/TenantSearchService.java ===
+package com.vuokraappi.service;
+
+import com.vuokraappi.dto.TenantResponse;
+import com.vuokraappi.entity.Tenant;
+import com.vuokraappi.entity.User;
+import com.vuokraappi.repository.TenantRepository;
+import jakarta.persistence.criteria.Join;
+import jakarta.persistence.criteria.Predicate;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDate;
+import java.time.Period;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class TenantSearchService {
+
+    private final TenantRepository tenantRepository;
+
+    @Transactional(readOnly = true)
+    public List<TenantResponse> searchTenants(
+            Integer minIncome,
+            Integer maxIncome,
+            String occupation,
+            Boolean hasPet,
+            Integer minAge,
+            Integer maxAge,
+            String city) {
+
+        log.info("Searching tenants with criteria: minIncome={}, maxIncome={}, occupation={}, hasPet={}, minAge={}, maxAge={}, city={}",
+                minIncome, maxIncome, occupation, hasPet, minAge, maxAge, city);
+
+        Specification<Tenant> spec = buildSpecification(minIncome, maxIncome, occupation, hasPet, minAge, maxAge, city);
+        
+        List<Tenant> tenants = tenantRepository.findAll(spec);
+        
+        log.info("Found {} tenants matching criteria", tenants.size());
+        
+        return tenants.stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+
+    private Specification<Tenant> buildSpecification(
+            Integer minIncome,
+            Integer maxIncome,
+            String occupation,
+            Boolean hasPet,
+            Integer minAge,
+            Integer maxAge,
+            String city) {
+
+        return (root, query, criteriaBuilder) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            
+            // Join User-tauluun
+            Join<Tenant, User> userJoin = root.join("user");
+
+            // MinIncome
+            if (minIncome != null) {
+                predicates.add(criteriaBuilder.greaterThanOrEqualTo(
+                        root.get("monthlyIncome"), minIncome));
+            }
+
+            // MaxIncome
+            if (maxIncome != null) {
+                predicates.add(criteriaBuilder.lessThanOrEqualTo(
+                        root.get("monthlyIncome"), maxIncome));
+            }
+
+            // Occupation (osittainen haku, case-insensitive)
+            if (occupation != null && !occupation.isBlank()) {
+                predicates.add(criteriaBuilder.like(
+                        criteriaBuilder.lower(root.get("occupation")),
+                        "%" + occupation.toLowerCase() + "%"));
+            }
+
+            // HasPet
+            if (hasPet != null) {
+                if (hasPet) {
+                    // On lemmikki - pet ei ole null eikä tyhjä
+                    predicates.add(criteriaBuilder.and(
+                            criteriaBuilder.isNotNull(root.get("pet")),
+                            criteriaBuilder.notEqual(root.get("pet"), "")
+                    ));
+                } else {
+                    // Ei ole lemmikkiä - pet on null tai tyhjä
+                    predicates.add(criteriaBuilder.or(
+                            criteriaBuilder.isNull(root.get("pet")),
+                            criteriaBuilder.equal(root.get("pet"), "")
+                    ));
+                }
+            }
+
+            // Age range (lasketaan syntymäajasta)
+            if (minAge != null || maxAge != null) {
+                LocalDate today = LocalDate.now();
+                
+                if (minAge != null) {
+                    LocalDate maxBirthDate = today.minusYears(minAge);
+                    predicates.add(criteriaBuilder.lessThanOrEqualTo(
+                            userJoin.get("dateOfBirth"), maxBirthDate));
+                }
+                
+                if (maxAge != null) {
+                    LocalDate minBirthDate = today.minusYears(maxAge + 1).plusDays(1);
+                    predicates.add(criteriaBuilder.greaterThanOrEqualTo(
+                            userJoin.get("dateOfBirth"), minBirthDate));
+                }
+            }
+
+            // City (osittainen haku, case-insensitive)
+            if (city != null && !city.isBlank()) {
+                predicates.add(criteriaBuilder.like(
+                        criteriaBuilder.lower(root.get("currentAddress")),
+                        "%" + city.toLowerCase() + "%"));
+            }
+
+            // Vain aktiiviset käyttäjät
+            predicates.add(criteriaBuilder.isTrue(userJoin.get("isActive")));
+
+            return criteriaBuilder.and(predicates.toArray(new Predicate[0]));
+        };
+    }
+
+    private TenantResponse mapToResponse(Tenant tenant) {
+        TenantResponse response = new TenantResponse();
+        
+        User user = tenant.getUser();
+        
+        // User fields
+        response.setId(user.getId());
+        response.setFirstName(user.getFirstName());
+        response.setLastName(user.getLastName());
+        response.setEmail(user.getEmail());
+        response.setPhoneNumber(user.getPhoneNumber());
+        response.setIntroduction(user.getIntroduction());
+        response.setDateOfBirth(user.getDateOfBirth());
+        
+        // Calculate age
+        if (user.getDateOfBirth() != null) {
+            response.setAge(Period.between(user.getDateOfBirth(), LocalDate.now()).getYears());
+        }
+        
+        // Tenant fields
+        response.setOccupation(tenant.getOccupation());
+        response.setMonthlyIncome(tenant.getMonthlyIncome());
+        response.setCurrentAddress(tenant.getCurrentAddress());
+        response.setPet(tenant.getPet());
+        
+        return response;
+    }
+}=== src/main/java/com/vuokraappi/service/UserService.java ===
+package com.vuokraappi.service;
+
+import com.vuokraappi.dto.UserDetailResponse;
+import com.vuokraappi.dto.UserRegistrationRequest;
+import com.vuokraappi.dto.UserResponse;
+import com.vuokraappi.dto.UserUpdateRequest;
+import com.vuokraappi.entity.Landlord;
+import com.vuokraappi.entity.Tenant;
+import com.vuokraappi.entity.User;
+import com.vuokraappi.entity.UserRole;
+import com.vuokraappi.exception.GraphApiException;
+import com.vuokraappi.exception.UserAlreadyExistsException;
+import com.vuokraappi.exception.UserNotFoundException;
+import com.vuokraappi.repository.LandlordRepository;
+import com.vuokraappi.repository.TenantRepository;
+import com.vuokraappi.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class UserService {
+    
+    private final UserRepository userRepository;
+    private final TenantRepository tenantRepository;
+    private final LandlordRepository landlordRepository;
+    private final GraphApiService graphApiService;
+    
+    @Transactional
+    public UserResponse registerUser(UserRegistrationRequest request) {
+        UUID userId = request.getId();
+        String role = request.getRole().toUpperCase();
+        
+        log.info("Attempting to register user with ID: {} and role: {}", userId, role);
+        
+        // Tarkistetaan, onko käyttäjä jo olemassa tietokannassa
+        if (userRepository.existsById(userId)) {
+            log.warn("User with ID {} already exists in database", userId);
+            throw new UserAlreadyExistsException(
+                String.format("User with ID %s already exists", userId)
+            );
+        }
+        
+        // Varmistetaan, että käyttäjä on olemassa Microsoft Entra ID:ssä
+        if (!graphApiService.userExistsInAzureAd(userId)) {
+            log.error("User with ID {} does not exist in Microsoft Entra ID", userId);
+            throw new GraphApiException(
+                String.format("User with ID %s does not exist in Microsoft Entra ID", userId)
+            );
+        }
+        
+        try {
+            // Päivitetään rooli Microsoft Entra ID:hen Graph API:n kautta (App Role)
+            graphApiService.assignUserRole(userId, role);
+            log.info("Successfully assigned app role in Microsoft Entra ID for user: {}", userId);
+            
+            // Luodaan käyttäjä tietokantaan
+            User user = new User();
+            user.setId(userId);
+            user.setRole(UserRole.valueOf(role));
+            user.setIsActive(true);
+            
+            // Luodaan roolin mukainen entiteetti ja asetetaan kaksisuuntainen suhde
+            if (UserRole.TENANT.equals(user.getRole())) {
+                Tenant tenant = new Tenant();
+                tenant.setId(userId);  // Aseta ID!
+                tenant.setUser(user);
+                user.setTenant(tenant);
+                log.info("Created tenant profile for user: {}", userId);
+            } else if (UserRole.LANDLORD.equals(user.getRole())) {
+                Landlord landlord = new Landlord();
+                landlord.setId(userId);  // Aseta ID!
+                landlord.setUser(user);
+                user.setLandlord(landlord);
+                log.info("Created landlord profile for user: {}", userId);
+            }
+            
+            // Tallennetaan käyttäjä - cascade hoitaa tenant/landlord tallennuksen
+            User savedUser = userRepository.save(user);
+            
+            log.info("Successfully registered user with ID: {} and role: {}", 
+                     savedUser.getId(), savedUser.getRole());
+            
+            // Palautetaan vastaus
+            return mapToResponse(savedUser);
+            
+        } catch (GraphApiException e) {
+            log.error("Failed to update role in Microsoft Entra ID for user: {}", userId, e);
+            // Graph API -virhe heitetään eteenpäin
+            throw e;
+        } catch (Exception e) {
+            log.error("Unexpected error during user registration for user: {}", userId, e);
+            throw new RuntimeException("Failed to register user", e);
+        }
+    }
+    
+    @Transactional
+    public void deleteUser(UUID userId) {
+        log.info("Attempting to delete user with ID: {}", userId);
+        
+        // Tarkistetaan, että käyttäjä on olemassa tietokannassa
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> {
+                log.warn("User with ID {} not found in database", userId);
+                return new UserNotFoundException(
+                    String.format("User with ID %s not found", userId)
+                );
+            });
+        
+        try {
+            // Poistetaan käyttäjä Microsoft Entra ID:stä
+            graphApiService.deleteUserFromEntraId(userId);
+            log.info("Successfully deleted user {} from Microsoft Entra ID", userId);
+            
+            // Poistetaan käyttäjä tietokannasta
+            // Cascade delete hoitaa tenant/landlord -taulujen poiston automaattisesti
+            userRepository.delete(user);
+            
+            log.info("Successfully deleted user with ID: {} (cascade deleted tenant/landlord profile)", userId);
+            
+        } catch (GraphApiException e) {
+            log.error("Failed to delete user from Microsoft Entra ID, aborting database deletion", e);
+            throw e;
+        } catch (Exception e) {
+            log.error("Unexpected error during user deletion for user: {}", userId, e);
+            throw new RuntimeException("Failed to delete user", e);
+        }
+    }
+    
+    private UserResponse mapToResponse(User user) {
+        UserResponse response = new UserResponse();
+        response.setId(user.getId());
+        response.setRole(user.getRole());
+        response.setCreatedAt(user.getCreatedAt());
+        response.setIsActive(user.getIsActive());
+        return response;
+    }
+    
+    public UserDetailResponse getUser(UUID userId) {
+        log.info("Fetching user with ID: {}", userId);
+        
+        User user = userRepository.findByIdWithDetails(userId)
+            .orElseThrow(() -> {
+                log.warn("User with ID {} not found", userId);
+                return new UserNotFoundException(
+                    String.format("User with ID %s not found", userId)
+                );
+            });
+        
+        return mapToDetailResponse(user);
+    }
+    
+    @Transactional
+    public UserDetailResponse updateUser(UUID userId, UserUpdateRequest request) {
+        log.info("Updating user with ID: {}", userId);
+        
+        User user = userRepository.findByIdWithDetails(userId)
+            .orElseThrow(() -> {
+                log.warn("User with ID {} not found", userId);
+                return new UserNotFoundException(
+                    String.format("User with ID %s not found", userId)
+                );
+            });
+        
+        // Tallenna vanha email tarkistusta varten
+        String oldEmail = user.getEmail();
+        
+        // Päivitä User-kentät jos ne on annettu
+        if (request.getFirstName() != null) {
+            user.setFirstName(request.getFirstName());
+        }
+        if (request.getLastName() != null) {
+            user.setLastName(request.getLastName());
+        }
+        if (request.getPhoneNumber() != null) {
+            user.setPhoneNumber(request.getPhoneNumber());
+        }
+        if (request.getEmail() != null) {
+            user.setEmail(request.getEmail());
+        }
+        if (request.getIntroduction() != null) {
+            user.setIntroduction(request.getIntroduction());
+        }
+        if (request.getDateOfBirth() != null) {
+            user.setDateOfBirth(request.getDateOfBirth());
+        }
+        if (request.getPersonalIdentityCode() != null) {
+            user.setPersonalIdentityCode(request.getPersonalIdentityCode());
+        }
+        
+        // Päivitä Tenant-kentät jos käyttäjä on tenant
+        if (user.getTenant() != null) {
+            if (request.getOccupation() != null) {
+                user.getTenant().setOccupation(request.getOccupation());
+            }
+            if (request.getMonthlyIncome() != null) {
+                user.getTenant().setMonthlyIncome(request.getMonthlyIncome());
+            }
+            if (request.getCurrentAddress() != null) {
+                user.getTenant().setCurrentAddress(request.getCurrentAddress());
+            }
+            if (request.getPet() != null) {
+                user.getTenant().setPet(request.getPet());
+            }
+        }
+        
+        // Päivitä Landlord-kentät jos käyttäjä on landlord
+        if (user.getLandlord() != null) {
+            if (request.getCompanyName() != null) {
+                user.getLandlord().setCompanyName(request.getCompanyName());
+            }
+            if (request.getBusinessId() != null) {
+                user.getLandlord().setBusinessId(request.getBusinessId());
+            }
+            if (request.getBankAccount() != null) {
+                user.getLandlord().setBankAccount(request.getBankAccount());
+            }
+        }
+        
+        // Tallenna muutokset
+        User updatedUser = userRepository.save(user);
+        
+        // Jos email muuttui TAI email on asetettu ensimmäistä kertaa, päivitä identities Entra ID:hen
+        // HUOM: Tarkista että email todella muuttui välttääksesi turhia API-kutsuja
+        boolean emailChanged = request.getEmail() != null && !request.getEmail().equals(oldEmail);
+        boolean isFirstTimeSettingEmail = oldEmail == null && request.getEmail() != null;
+        
+        if (emailChanged || isFirstTimeSettingEmail) {
+            try {
+                graphApiService.updateUserEmail(userId, request.getEmail());
+                log.info("Successfully updated identities in Microsoft Entra ID for user: {}", userId);
+            } catch (GraphApiException e) {
+                // Jos Azure hylkää (esim. email on jo identiteetissä), logita mutta älä failaa
+                // Email on jo tallennettu omaan tietokantaan, mikä on tärkein
+                log.warn("Failed to update identities in Microsoft Entra ID for user: {} - {}", 
+                        userId, e.getMessage());
+                log.info("Email saved to database successfully, Azure identity update skipped");
+            }
+        }
+        
+        log.info("Successfully updated user with ID: {}", userId);
+        return mapToDetailResponse(updatedUser);
+    }
+    
+    private UserDetailResponse mapToDetailResponse(User user) {
+        log.debug("Mapping user to detail response. User: {}, Tenant: {}, Landlord: {}", 
+                  user.getId(), user.getTenant() != null, user.getLandlord() != null);
+        
+        UserDetailResponse response = new UserDetailResponse();
+        
+        // Perustiedot
+        response.setId(user.getId());
+        response.setRole(user.getRole());
+        response.setFirstName(user.getFirstName());
+        response.setLastName(user.getLastName());
+        response.setPhoneNumber(user.getPhoneNumber());
+        response.setEmail(user.getEmail());
+        response.setIntroduction(user.getIntroduction());
+        response.setDateOfBirth(user.getDateOfBirth());
+        response.setPersonalIdentityCode(user.getPersonalIdentityCode());
+        response.setCreatedAt(user.getCreatedAt());
+        response.setUpdatedAt(user.getUpdatedAt());
+        response.setIsActive(user.getIsActive());
+        
+        log.debug("User basic fields - email: {}, intro: {}", user.getEmail(), user.getIntroduction());
+        
+        // Tenant-tiedot
+        if (user.getTenant() != null) {
+            log.debug("Loading tenant details");
+            response.setOccupation(user.getTenant().getOccupation());
+            response.setMonthlyIncome(user.getTenant().getMonthlyIncome());
+            response.setCurrentAddress(user.getTenant().getCurrentAddress());
+            response.setPet(user.getTenant().getPet());
+        }
+        
+        // Landlord-tiedot
+        if (user.getLandlord() != null) {
+            log.debug("Loading landlord details");
+            response.setCompanyName(user.getLandlord().getCompanyName());
+            response.setBusinessId(user.getLandlord().getBusinessId());
+            response.setBankAccount(user.getLandlord().getBankAccount());
+        }
+        
+        return response;
+    }
+}=== src/main/java/com/vuokraappi/service/ApartmentService.java ===
+package com.vuokraappi.service;
+
+import com.vuokraappi.dto.ApartmentRequest;
+import com.vuokraappi.dto.ApartmentResponse;
+import com.vuokraappi.dto.ApartmentSearchCriteria;
+import com.vuokraappi.entity.Apartment;
+import com.vuokraappi.entity.Landlord;
+import com.vuokraappi.entity.User;
+import com.vuokraappi.exception.ResourceNotFoundException;
+import com.vuokraappi.exception.UnauthorizedException;
+import com.vuokraappi.exception.UserNotFoundException;
+import com.vuokraappi.repository.ApartmentRepository;
+import com.vuokraappi.repository.ApartmentSpecification;
+import com.vuokraappi.repository.LandlordRepository;
+import com.vuokraappi.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.Collections;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Service
+@RequiredArgsConstructor
+@Slf4j
+public class ApartmentService {
+    
+    private final ApartmentRepository apartmentRepository;
+    private final LandlordRepository landlordRepository;
+    private final UserRepository userRepository;
+    
+    @Transactional(readOnly = true)
+    public List<ApartmentResponse> getApartmentsByUserId(UUID userId) {
+        // Tarkista ettÃ¤ kÃ¤yttÃ¤jÃ¤ on olemassa
+        userRepository.findById(userId)
+            .orElseThrow(() -> new UserNotFoundException(
+                String.format("User with ID %s not found", userId)
+            ));
+
+        // Hae landlord - jos ei ole landlord, palautetaan tyhjÃ¤ lista
+        return landlordRepository.findById(userId)
+            .map(landlord -> apartmentRepository.findByOwner(landlord).stream()
+                .map(this::convertToDTO)
+                .collect(Collectors.toList()))
+            .orElse(Collections.emptyList());
+    }
+
+    @Transactional(readOnly = true)
+    public List<ApartmentResponse> getAllApartments() {
+        return apartmentRepository.findAll().stream()
+                .map(this::convertToDTO)
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Hakee asuntoja annettujen kriteerien perusteella.
+     * Kaikki kriteerit ovat optionaalisia - tyhjä criteria palauttaa kaikki asunnot.
+     */
+    @Transactional(readOnly = true)
+    public List<ApartmentResponse> searchApartments(ApartmentSearchCriteria criteria) {
+        log.info("Searching apartments with criteria: {}", criteria);
+        
+        List<Apartment> apartments = apartmentRepository.findAll(
+            ApartmentSpecification.withCriteria(criteria)
+        );
+        
+        log.info("Found {} apartments matching criteria", apartments.size());
+        
+        return apartments.stream()
+                .map(this::convertToDTO)
+                .collect(Collectors.toList());
+    }
+    
+    @Transactional(readOnly = true)
+    public ApartmentResponse getApartmentById(UUID id) {
+        Apartment apartment = apartmentRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Apartment not found with id: " + id));
+        return convertToDTO(apartment);
+    }
+    
+    @Transactional
+    public ApartmentResponse createApartment(ApartmentRequest requestDTO, User currentUser) {
+        // Verify user is a landlord - koska id on jaettu, voidaan hakea suoraan
+        Landlord landlord = landlordRepository.findById(currentUser.getId())
+                .orElseThrow(() -> new UnauthorizedException("Only landlords can create apartments"));
+    
+        Apartment apartment = new Apartment();
+        apartment.setOwner(landlord);
+        apartment.setZipcode(requestDTO.getZipcode());
+        apartment.setStreetAddress(requestDTO.getStreetAddress());
+        apartment.setCity(requestDTO.getCity());
+        apartment.setRegion(requestDTO.getRegion());
+        apartment.setSize(requestDTO.getSize());
+        apartment.setLongitude(requestDTO.getLongitude());
+        apartment.setLatitude(requestDTO.getLatitude());
+        apartment.setRent(requestDTO.getRent());
+    
+        Apartment savedApartment = apartmentRepository.save(apartment);
+        return convertToDTO(savedApartment);
+    }
+
+    @Transactional
+    public ApartmentResponse updateApartment(UUID id, ApartmentRequest requestDTO, User currentUser) {
+        Apartment apartment = apartmentRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Apartment not found with id: " + id));
+
+        // Verify ownership
+        if (!apartment.getOwner().getUser().getId().equals(currentUser.getId())) {
+            throw new UnauthorizedException("You can only update your own apartments");
+        }
+
+        // PÃ¤ivitetÃ¤Ã¤n vain ne kentÃ¤t jotka on lÃ¤hetetty (ei null)
+        if (requestDTO.getZipcode() != null) apartment.setZipcode(requestDTO.getZipcode());
+        if (requestDTO.getStreetAddress() != null) apartment.setStreetAddress(requestDTO.getStreetAddress());
+        if (requestDTO.getCity() != null) apartment.setCity(requestDTO.getCity());
+        if (requestDTO.getRegion() != null) apartment.setRegion(requestDTO.getRegion());
+        if (requestDTO.getSize() != null) apartment.setSize(requestDTO.getSize());
+        if (requestDTO.getLongitude() != null) apartment.setLongitude(requestDTO.getLongitude());
+        if (requestDTO.getLatitude() != null) apartment.setLatitude(requestDTO.getLatitude());
+        if (requestDTO.getRent() != null) apartment.setRent(requestDTO.getRent());
+
+        Apartment updatedApartment = apartmentRepository.save(apartment);
+        return convertToDTO(updatedApartment);
+    }
+    
+    @Transactional
+    public void deleteApartment(UUID id, User currentUser) {
+        Apartment apartment = apartmentRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Apartment not found with id: " + id));
+        
+        // Verify ownership (unless admin)
+        if (!currentUser.getRole().equals("ADMIN") && 
+            !apartment.getOwner().getUser().getId().equals(currentUser.getId())) {
+            throw new UnauthorizedException("You can only delete your own apartments");
+        }
+        
+        apartmentRepository.delete(apartment);
+    }
+    
+    private ApartmentResponse convertToDTO(Apartment apartment) {
+        ApartmentResponse dto = new ApartmentResponse();
+        dto.setId(apartment.getId());
+        dto.setOwnerId(apartment.getOwner().getId());
+    
+        User owner = apartment.getOwner().getUser();
+        String firstName = owner.getFirstName() != null ? owner.getFirstName() : "";
+        String lastName = owner.getLastName() != null ? owner.getLastName() : "";
+        dto.setOwnerName((firstName + " " + lastName).trim());
+    
+        dto.setZipcode(apartment.getZipcode());
+        dto.setStreetAddress(apartment.getStreetAddress());
+        dto.setCity(apartment.getCity());
+        dto.setRegion(apartment.getRegion());
+        dto.setSize(apartment.getSize());
+        dto.setLongitude(apartment.getLongitude());
+        dto.setLatitude(apartment.getLatitude());
+        dto.setRent(apartment.getRent());
+        return dto;
+    }
+}=== src/main/java/com/vuokraappi/config/MicrosoftGraphProperties.java ===
+package com.vuokraappi.config;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+@ConfigurationProperties(prefix = "microsoft.graph.api")
+@Data
+public class MicrosoftGraphProperties {
+    
+    private String baseUrl;
+    private Integer timeout;
+}
+=== src/main/java/com/vuokraappi/config/SecurityConfig.java ===
+package com.vuokraappi.config;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+@Configuration
+@EnableWebSecurity
+@Profile({"dev", "prod"})
+@RequiredArgsConstructor
+public class SecurityConfig {
+
+    private final JwtAuthFilter jwtAuthFilter;
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .authorizeHttpRequests(authorize -> authorize
+                .anyRequest().permitAll()
+            )
+            .csrf(csrf -> csrf.disable())
+            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+
+        return http.build();
+    }
+}=== src/main/java/com/vuokraappi/config/RestTemplateConfig.java ===
+package com.vuokraappi.config;
+
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.client.RestTemplate;
+
+import java.time.Duration;
+
+@Configuration
+public class RestTemplateConfig {
+    
+    @Bean
+    public RestTemplate restTemplate(RestTemplateBuilder builder, 
+                                     MicrosoftGraphProperties graphProperties) {
+        return builder
+                .setConnectTimeout(Duration.ofMillis(graphProperties.getTimeout()))
+                .setReadTimeout(Duration.ofMillis(graphProperties.getTimeout()))
+                .build();
+    }
+}
+=== src/main/java/com/vuokraappi/config/LocalSecurityConfig.java ===
+package com.vuokraappi.config;
+
+import com.vuokraappi.entity.User;
+import com.vuokraappi.repository.UserRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.password.NoOpPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+
+@Configuration
+@EnableWebSecurity
+@Profile("local")
+@RequiredArgsConstructor
+public class LocalSecurityConfig {
+
+    private final UserRepository userRepository;
+
+    @Bean
+    public SecurityFilterChain localSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .authorizeHttpRequests(authorize -> authorize
+                .anyRequest().permitAll()
+            )
+            .csrf(csrf -> csrf.disable())
+            .httpBasic(basic -> {});
+
+        return http.build();
+    }
+
+    @Bean
+    public UserDetailsService localUserDetailsService() {
+        return email -> {
+            User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + email));
+
+            return new UserPrincipal(user);
+        };
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        // Local-ympäristössä ei tarvita salasanoja
+        return NoOpPasswordEncoder.getInstance();
+    }
+}=== src/main/java/com/vuokraappi/config/WebClientConfig.java ===
+package com.vuokraappi.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.client.*;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.reactive.function.client.ServletOAuth2AuthorizedClientExchangeFilterFunction;
+import org.springframework.web.reactive.function.client.WebClient;
+
+@Configuration
+public class WebClientConfig {
+    
+    /**
+     * OAuth2AuthorizedClientManager hallinnoi OAuth2 Client Credentials Flow tokenien hakemista ja cachettamista
+     */
+    @Bean
+    public OAuth2AuthorizedClientManager authorizedClientManager(
+            ClientRegistrationRepository clientRegistrationRepository,
+            OAuth2AuthorizedClientService authorizedClientService) {
+        
+        OAuth2AuthorizedClientProvider authorizedClientProvider =
+            OAuth2AuthorizedClientProviderBuilder.builder()
+                .clientCredentials()
+                .build();
+        
+        AuthorizedClientServiceOAuth2AuthorizedClientManager authorizedClientManager =
+            new AuthorizedClientServiceOAuth2AuthorizedClientManager(
+                clientRegistrationRepository, 
+                authorizedClientService
+            );
+        
+        authorizedClientManager.setAuthorizedClientProvider(authorizedClientProvider);
+        
+        return authorizedClientManager;
+    }
+    
+    /**
+     * WebClient automaattisella OAuth2 token -hallinnalla
+     */
+    @Bean
+    public WebClient graphApiWebClient(OAuth2AuthorizedClientManager authorizedClientManager,
+                                       MicrosoftGraphProperties graphProperties) {
+        
+        ServletOAuth2AuthorizedClientExchangeFilterFunction oauth2 =
+            new ServletOAuth2AuthorizedClientExchangeFilterFunction(authorizedClientManager);
+        
+        // Asetetaan default client registration ID
+        oauth2.setDefaultClientRegistrationId("graph");
+        
+        return WebClient.builder()
+            .baseUrl(graphProperties.getBaseUrl())
+            .apply(oauth2.oauth2Configuration())
+            .build();
+    }
+}
+=== src/main/java/com/vuokraappi/config/AiConfig.java ===
+package com.vuokraappi.config;
+
+import com.vuokraappi.ai.ApartmentListingAgent;
+import com.vuokraappi.ai.ListingTools;
+import dev.langchain4j.model.openai.OpenAiChatModel;
+import dev.langchain4j.service.AiServices;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.reactive.function.client.WebClient;
+
+@Configuration
+public class AiConfig {
+
+    @Value("${openai.api.key}")
+    private String openAiApiKey;
+
+    @Value("${openai.model:gpt-4o-mini}")
+    private String modelName;
+
+    @Bean
+    public OpenAiChatModel openAiChatModel() {
+        return OpenAiChatModel.builder()
+                .apiKey(openAiApiKey)
+                .modelName(modelName)
+                .temperature(0.3)
+                .maxTokens(2000)
+                .build();
+    }
+
+    @Bean
+    public ApartmentListingAgent apartmentListingAgent(
+            OpenAiChatModel chatModel,
+            ListingTools listingTools) {
+
+        return AiServices.builder(ApartmentListingAgent.class)
+                .chatLanguageModel(chatModel)
+                .tools(listingTools)
+                .build();
+    }
+
+    /**
+     * WebClient Nominatim-geocoding-palvelulle (OpenStreetMap).
+     * Usage policy: max 1 req/s, User-Agent pakollinen.
+     */
+    @Bean(name = "nominatimWebClient")
+    public WebClient nominatimWebClient() {
+        return WebClient.builder()
+                .baseUrl("https://nominatim.openstreetmap.org")
+                .defaultHeader("Accept", "application/json")
+                .codecs(config -> config.defaultCodecs().maxInMemorySize(1024 * 1024))
+                .build();
+    }
+
+    /**
+     * WebClient Overpass API:lle (OpenStreetMap lähipalvelut).
+     */
+    @Bean(name = "overpassWebClient")
+    public WebClient overpassWebClient() {
+        return WebClient.builder()
+                .baseUrl("https://overpass-api.de")
+                .defaultHeader("Accept", "application/json")
+                .codecs(config -> config.defaultCodecs().maxInMemorySize(5 * 1024 * 1024))
+                .build();
+    }
+
+    @Bean(name = "statFinWebClient")
+    public WebClient statFinWebClient() {
+        return WebClient.builder()
+                .baseUrl("https://pxdata.stat.fi")
+                .defaultHeader("Accept", "application/json")
+                .codecs(config -> config.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
+                .build();
+    }
+}=== src/main/java/com/vuokraappi/config/JwtAuthFilter.java ===
+package com.vuokraappi.config;
+
+import com.vuokraappi.entity.User;
+import com.vuokraappi.repository.UserRepository;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Profile;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+import java.util.Base64;
+import java.util.UUID;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+@Component
+@Profile({"dev", "prod"})
+@RequiredArgsConstructor
+@Slf4j
+public class JwtAuthFilter extends OncePerRequestFilter {
+
+    private final UserRepository userRepository;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+
+        String authHeader = request.getHeader("Authorization");
+
+        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        try {
+            // Puretaan JWT token - API Gateway on jo validoinut sen
+            String token = authHeader.substring(7);
+            String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]));
+            JsonNode claims = objectMapper.readTree(payload);
+
+            // Haetaan oid-kenttä (Azure AD user ID)
+            String oid = claims.get("oid").asText();
+            UUID userId = UUID.fromString(oid);
+
+            // Haetaan käyttäjä tietokannasta
+            User user = userRepository.findById(userId).orElse(null);
+
+            if (user != null) {
+                UserPrincipal principal = new UserPrincipal(user);
+                UsernamePasswordAuthenticationToken authentication =
+                    new UsernamePasswordAuthenticationToken(principal, null, principal.getAuthorities());
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+                log.debug("Authenticated user {} from JWT token", userId);
+            } else {
+                log.warn("User {} from JWT token not found in database", userId);
+            }
+
+        } catch (Exception e) {
+            log.error("Failed to parse JWT token", e);
+        }
+
+        filterChain.doFilter(request, response);
+    }
+}=== src/main/java/com/vuokraappi/config/UserPrincipal.java ===
+package com.vuokraappi.config;
+
+import com.vuokraappi.entity.User;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+import java.util.Collection;
+import java.util.Collections;
+
+@RequiredArgsConstructor
+public class UserPrincipal implements UserDetails {
+
+    @Getter
+    private final User user;
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return Collections.singletonList(
+            new SimpleGrantedAuthority("ROLE_" + user.getRole())
+        );
+    }
+
+    @Override
+    public String getPassword() {
+        return "";
+    }
+
+    @Override
+    public String getUsername() {
+        return user.getEmail();
+    }
+
+    @Override
+    public boolean isAccountNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isAccountNonLocked() {
+        return true;
+    }
+
+    @Override
+    public boolean isCredentialsNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return user.getIsActive();
+    }
+}=== src/main/java/com/vuokraappi/dto/UserUpdateRequest.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.Size;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDate;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserUpdateRequest {
+    
+    // User fields
+    @JsonProperty("firstName")
+    @Size(max = 100, message = "First name must not exceed 100 characters")
+    private String firstName;
+    
+    @JsonProperty("lastName")
+    @Size(max = 100, message = "Last name must not exceed 100 characters")
+    private String lastName;
+    
+    @JsonProperty("phoneNumber")
+    @Size(max = 20, message = "Phone number must not exceed 20 characters")
+    private String phoneNumber;
+    
+    @JsonProperty("email")
+    @Email(message = "Email must be valid")
+    @Size(max = 255, message = "Email must not exceed 255 characters")
+    private String email;
+    
+    @JsonProperty("introduction")
+    @Size(max = 2000, message = "Introduction must not exceed 2000 characters")
+    private String introduction;
+    
+    @JsonProperty("dateOfBirth")
+    private LocalDate dateOfBirth;
+    
+    @JsonProperty("personalIdentityCode")
+    @Size(max = 25, message = "Personal identity code must not exceed 25 characters")
+    private String personalIdentityCode;
+    
+    // Tenant-specific fields
+    @JsonProperty("occupation")
+    @Size(max = 100, message = "Occupation must not exceed 100 characters")
+    private String occupation;
+    
+    @JsonProperty("monthlyIncome")
+    private Integer monthlyIncome;
+    
+    @JsonProperty("currentAddress")
+    @Size(max = 255, message = "Current address must not exceed 255 characters")
+    private String currentAddress;
+    
+    @JsonProperty("pet")
+    @Size(max = 100, message = "Pet must not exceed 100 characters")
+    private String pet;
+    
+    // Landlord-specific fields
+    @JsonProperty("companyName")
+    @Size(max = 200, message = "Company name must not exceed 200 characters")
+    private String companyName;
+    
+    @JsonProperty("businessId")
+    @Size(max = 50, message = "Business ID must not exceed 50 characters")
+    private String businessId;
+    
+    @JsonProperty("bankAccount")
+    @Size(max = 100, message = "Bank account must not exceed 100 characters")
+    private String bankAccount;
+}
+=== src/main/java/com/vuokraappi/dto/TenantResponse.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDate;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class TenantResponse {
+
+    @JsonProperty("id")
+    private UUID id;
+
+    @JsonProperty("firstName")
+    private String firstName;
+
+    @JsonProperty("lastName")
+    private String lastName;
+
+    @JsonProperty("email")
+    private String email;
+
+    @JsonProperty("phoneNumber")
+    private String phoneNumber;
+
+    @JsonProperty("introduction")
+    private String introduction;
+
+    @JsonProperty("dateOfBirth")
+    private LocalDate dateOfBirth;
+
+    @JsonProperty("age")
+    private Integer age;
+
+    // Tenant-specific fields
+    @JsonProperty("occupation")
+    private String occupation;
+
+    @JsonProperty("monthlyIncome")
+    private Integer monthlyIncome;
+
+    @JsonProperty("currentAddress")
+    private String currentAddress;
+
+    @JsonProperty("pet")
+    private String pet;
+}=== src/main/java/com/vuokraappi/dto/UserDetailResponse.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vuokraappi.entity.UserRole;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserDetailResponse {
+    
+    @JsonProperty("id")
+    private UUID id;
+    
+    @JsonProperty("role")
+    private UserRole role;
+    
+    @JsonProperty("firstName")
+    private String firstName;
+    
+    @JsonProperty("lastName")
+    private String lastName;
+    
+    @JsonProperty("phoneNumber")
+    private String phoneNumber;
+    
+    @JsonProperty("email")
+    private String email;
+    
+    @JsonProperty("introduction")
+    private String introduction;
+    
+    @JsonProperty("dateOfBirth")
+    private LocalDate dateOfBirth;
+    
+    @JsonProperty("personalIdentityCode")
+    private String personalIdentityCode;
+    
+    @JsonProperty("createdAt")
+    private LocalDateTime createdAt;
+    
+    @JsonProperty("updatedAt")
+    private LocalDateTime updatedAt;
+    
+    @JsonProperty("isActive")
+    private Boolean isActive;
+    
+    // Tenant-specific fields
+    @JsonProperty("occupation")
+    private String occupation;
+    
+    @JsonProperty("monthlyIncome")
+    private Integer monthlyIncome;
+    
+    @JsonProperty("currentAddress")
+    private String currentAddress;
+    
+    @JsonProperty("pet")
+    private String pet;
+    
+    // Landlord-specific fields
+    @JsonProperty("companyName")
+    private String companyName;
+    
+    @JsonProperty("businessId")
+    private String businessId;
+    
+    @JsonProperty("bankAccount")
+    private String bankAccount;
+}
+=== src/main/java/com/vuokraappi/dto/listing/GenerateListingRequest.java ===
+package com.vuokraappi.dto.listing;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.*;
+import lombok.Data;
+
+@Data
+public class GenerateListingRequest {
+
+    @NotBlank(message = "Postinumero on pakollinen")
+    @Pattern(regexp = "^\\d{5}$", message = "Postinumeron tulee olla 5 numeroa")
+    @JsonProperty("zipcode")
+    private String zipcode;
+
+    @NotBlank(message = "Kaupunki on pakollinen")
+    @JsonProperty("city")
+    private String city;
+
+    @NotBlank(message = "Katuosoite on pakollinen")
+    @JsonProperty("street_address")
+    private String streetAddress;
+
+    @Min(value = 1, message = "Huoneluvun tulee olla vähintään 1")
+    @Max(value = 10, message = "Huoneluvun tulee olla enintään 10")
+    @JsonProperty("rooms")
+    private int rooms;
+
+    @DecimalMin(value = "10.0", message = "Koon tulee olla vähintään 10 m²")
+    @DecimalMax(value = "500.0", message = "Koon tulee olla enintään 500 m²")
+    @JsonProperty("size")
+    private double size;
+
+    @Min(value = 0, message = "Kerroksen tulee olla vähintään 0")
+    @JsonProperty("floor")
+    private int floor;
+
+    @Min(value = 1800, message = "Rakennusvuoden tulee olla vähintään 1800")
+    @JsonProperty("build_year")
+    private int buildYear;
+
+    // Vapaaehtoinen lisätieto esim. "sauna, parveke, hissi"
+    @JsonProperty("additional_info")
+    private String additionalInfo;
+}=== src/main/java/com/vuokraappi/dto/UserRegistrationRequest.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserRegistrationRequest {
+    
+    @NotNull(message = "User ID is required")
+    @JsonProperty("id")
+    private UUID id;
+    
+    @NotBlank(message = "Role is required")
+    @Pattern(regexp = "^(tenant|landlord)$", 
+             message = "Role must be either 'tenant' or 'landlord'",
+             flags = Pattern.Flag.CASE_INSENSITIVE)
+    @JsonProperty("role")
+    private String role;
+}
+=== src/main/java/com/vuokraappi/dto/UserResponse.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.vuokraappi.entity.UserRole;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UserResponse {
+    
+    @JsonProperty("id")
+    private UUID id;
+    
+    @JsonProperty("role")
+    private UserRole role;
+    
+    @JsonProperty("createdAt")
+    private LocalDateTime createdAt;
+    
+    @JsonProperty("isActive")
+    private Boolean isActive;
+}
+=== src/main/java/com/vuokraappi/dto/ApartmentSearchCriteria.java ===
+package com.vuokraappi.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+
+/**
+ * Hakukriteerit asunnoille.
+ * Kaikki kentät ovat optionaalisia - vain annetut kriteerit käytetään hakuun.
+ */
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class ApartmentSearchCriteria {
+
+    private String zipcode;
+    private String city;
+    private String region;
+    
+    // Size range
+    private Double minSize;
+    private Double maxSize;
+    
+    // Rent range
+    private BigDecimal minRent;
+    private BigDecimal maxRent;
+    
+    // Location-based search (coordinates + radius in km)
+    private Double latitude;
+    private Double longitude;
+    private Double radiusKm;
+}=== src/main/java/com/vuokraappi/dto/ApartmentRequest.java ===
+package com.vuokraappi.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ApartmentRequest {
+
+    private String zipcode;
+    private String streetAddress;
+    private String city;
+    private String region;
+    private Double size;
+    private Double longitude;
+    private Double latitude;
+    private BigDecimal rent;
+}=== src/main/java/com/vuokraappi/dto/ApartmentResponse.java ===
+package com.vuokraappi.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class ApartmentResponse {
+    
+    private UUID id;
+    private UUID ownerId;
+    private String ownerName;
+    private String zipcode;
+    private String streetAddress;
+    private String city;
+    private String region;
+    private Double size;
+    private Double longitude;
+    private Double latitude;
+    private BigDecimal rent;
+}=== src/main/java/com/vuokraappi/dto/GraphApiUserExtensionUpdate.java ===
+package com.vuokraappi.dto;
+
+import com.fasterxml.jackson.annotation.JsonProperty;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.HashMap;
+import java.util.Map;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class GraphApiUserExtensionUpdate {
+    
+    // Azure AD:ssä extension attributet tallennetaan avain-arvo pareina
+    // Esim: "extension_<appId>_role": "TENANT"
+    @JsonProperty("extensionAttributes")
+    private Map<String, String> extensionAttributes = new HashMap<>();
+    
+    public void addExtensionAttribute(String key, String value) {
+        this.extensionAttributes.put(key, value);
+    }
+}
+=== src/main/java/com/vuokraappi/VuokraappiApplication.java ===
+package com.vuokraappi;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class VuokraappiApplication {
+    
+    public static void main(String[] args) {
+        SpringApplication.run(VuokraappiApplication.class, args);
+    }
+}

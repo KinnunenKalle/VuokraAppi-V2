@@ -1,0 +1,41 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${AZURE_POSTGRESQL_HOST}:5432/${AZURE_POSTGRESQL_DATABASE}?sslmode=require
+    username: ${AZURE_POSTGRESQL_USERNAME}
+    password: ${AZURE_POSTGRESQL_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+  
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+logging:
+  level:
+    com.vuokraappi: WARN
+    org.hibernate.SQL: WARN
+    org.springframework.web: WARN
+
+azure:
+  activedirectory:
+    tenant-id: ${AZURE_TENANT_ID}
+    client-id: ${AZURE_CLIENT_ID}
+    client-secret: ${AZURE_CLIENT_SECRET}
+  application-insights:
+    instrumentation-key: ${APPINSIGHTS_INSTRUMENTATIONKEY}
+
+microsoft:
+  graph:
+    api:
+      base-url: https://graph.microsoft.com/v1.0
+      timeout: 30000
