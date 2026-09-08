@@ -1,11 +1,21 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, Dimensions, Animated, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  Image,
+  Dimensions,
+  Animated,
+  ActivityIndicator,
+  Modal,
+  ScrollView,
+  TouchableOpacity,
+} from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { Feather } from '@expo/vector-icons';
 import Button from '../../components/common/Button';
 import { Colors, Typography, Spacing, BorderRadius } from '../../theme';
-
-const API_BASE = 'http://localhost:8080';
+import apartmentService from '../../services/apartmentService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -13,6 +23,19 @@ const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25;
 const SwipeCard = ({ apartment, isTop, depth, onSwiped }) => {
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
+  const [imageIndex, setImageIndex] = useState(0);
+  const images = apartment.images?.length ? apartment.images : null;
+  const currentImageUrl = images ? images[imageIndex]?.url : apartment.imageUrl;
+
+  const showPrevImage = useCallback(() => {
+    if (!images) return;
+    setImageIndex((i) => (i > 0 ? i - 1 : i));
+  }, [images]);
+
+  const showNextImage = useCallback(() => {
+    if (!images) return;
+    setImageIndex((i) => (i < images.length - 1 ? i + 1 : i));
+  }, [images]);
 
   const likeOpacity = useRef(
     translateX.interpolate({
@@ -84,9 +107,23 @@ const SwipeCard = ({ apartment, isTop, depth, onSwiped }) => {
           },
         ]}
       >
-        {apartment.imageUrl ? (
+        {images ? (
+          <View style={styles.cardImage}>
+            {images.map((img, i) => (
+              <Image
+                key={img.id}
+                source={{ uri: img.url }}
+                style={[
+                  styles.cardImage,
+                  { position: 'absolute', top: 0, left: 0, opacity: i === imageIndex ? 1 : 0 },
+                ]}
+                resizeMode="cover"
+              />
+            ))}
+          </View>
+        ) : currentImageUrl ? (
           <Image
-            source={{ uri: apartment.imageUrl }}
+            source={{ uri: currentImageUrl }}
             style={styles.cardImage}
             resizeMode="cover"
           />
@@ -98,6 +135,28 @@ const SwipeCard = ({ apartment, isTop, depth, onSwiped }) => {
         <View style={styles.gradientOverlay} />
 
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+          {isTop && images && images.length > 1 && (
+            <>
+              <View style={styles.imageDots}>
+                {images.map((img, i) => (
+                  <View key={img.id} style={styles.imageDotTrack}>
+                    <View style={[styles.imageDotFill, i === imageIndex && styles.imageDotFillActive]} />
+                  </View>
+                ))}
+              </View>
+              <TouchableOpacity
+                style={styles.tapZoneLeft}
+                activeOpacity={1}
+                onPress={showPrevImage}
+              />
+              <TouchableOpacity
+                style={styles.tapZoneRight}
+                activeOpacity={1}
+                onPress={showNextImage}
+              />
+            </>
+          )}
+
           {isTop && (
             <>
               <Animated.View
@@ -147,35 +206,133 @@ const SwipeCard = ({ apartment, isTop, depth, onSwiped }) => {
   );
 };
 
+const ApartmentDetailModal = ({ apartment, onClose }) => {
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const images = apartment?.images ?? [];
+
+  if (!apartment) return null;
+
+  const onGalleryScroll = (e) => {
+    const idx = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+    setGalleryIndex(idx);
+  };
+
+  return (
+    <Modal visible={!!apartment} animationType="slide" onRequestClose={onClose}>
+      <ScrollView style={styles.detailContainer} bounces={false}>
+        <View style={styles.gallery}>
+          {images.length > 0 ? (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onScroll={onGalleryScroll}
+              scrollEventThrottle={16}
+            >
+              {images.map((img) => (
+                <Image
+                  key={img.id}
+                  source={{ uri: img.url }}
+                  style={styles.galleryImage}
+                  resizeMode="cover"
+                />
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={[styles.galleryImage, styles.noImage]}>
+              <Feather name="home" size={48} color="#555" />
+            </View>
+          )}
+
+          {images.length > 1 && (
+            <View style={styles.galleryDots}>
+              {images.map((img, i) => (
+                <View
+                  key={img.id}
+                  style={[styles.galleryDot, i === galleryIndex && styles.galleryDotActive]}
+                />
+              ))}
+            </View>
+          )}
+
+          <TouchableOpacity style={styles.closeButton} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+            <Feather name="x" size={24} color="#ffffff" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.detailBody}>
+          <Text style={styles.detailTitle}>{apartment.streetAddress}</Text>
+          <View style={styles.locationRow}>
+            <Feather name="map-pin" size={14} color={Colors.text.muted} />
+            <Text style={styles.detailLocation}>
+              {apartment.zipcode} {apartment.city}
+              {apartment.region ? `, ${apartment.region}` : ''}
+            </Text>
+          </View>
+
+          <Text style={styles.detailRent}>{apartment.rent} €/kk</Text>
+
+          <View style={styles.detailStatsRow}>
+            <View style={styles.detailStat}>
+              <Feather name="maximize" size={16} color={Colors.text.muted} />
+              <Text style={styles.detailStatText}>{apartment.size} m²</Text>
+            </View>
+            {apartment.ownerIdentityVerified && (
+              <View style={styles.detailStat}>
+                <Feather name="check-circle" size={16} color={Colors.success ?? '#22C55E'} />
+                <Text style={[styles.detailStatText, { color: Colors.success ?? '#22C55E' }]}>
+                  Vuokranantaja vahvistettu
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {apartment.ownerName && (
+            <View style={styles.ownerBox}>
+              <Feather name="user" size={16} color={Colors.text.muted} />
+              <Text style={styles.detailStatText}>{apartment.ownerName}</Text>
+            </View>
+          )}
+        </View>
+      </ScrollView>
+    </Modal>
+  );
+};
+
 const BrowseScreen = () => {
   const [apartments, setApartments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [detailApartment, setDetailApartment] = useState(null);
 
   useEffect(() => {
     const fetchApartments = async () => {
       try {
-        const res = await fetch(`${API_BASE}/v1/apartments`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const data = await apartmentService.getAllApartments();
 
         const withImages = await Promise.all(
           data.map(async (apt) => {
             try {
-              const imgRes = await fetch(`${API_BASE}/v1/apartments/${apt.id}/images`);
-              const images = imgRes.ok ? await imgRes.json() : [];
-              const primary = images.find((i) => i.isPrimary) || images[0];
-              return { ...apt, imageUrl: primary?.url ?? null };
+              const images = await apartmentService.getImages(apt.id);
+              const sorted = [...images].sort((a, b) => a.sortOrder - b.sortOrder);
+              const primary = sorted.find((i) => i.isPrimary) || sorted[0];
+              return { ...apt, images: sorted, imageUrl: primary?.url ?? null };
             } catch {
-              return { ...apt, imageUrl: null };
+              return { ...apt, images: [], imageUrl: null };
             }
           })
         );
 
+        withImages.forEach((apt) => {
+          (apt.images ?? []).forEach((img) => {
+            if (img.url) Image.prefetch(img.url).catch(() => {});
+          });
+        });
+
         setApartments(withImages);
       } catch (e) {
-        setError(e.message);
+        setError(e.userMessage ?? e.message);
       } finally {
         setLoading(false);
       }
@@ -241,6 +398,13 @@ const BrowseScreen = () => {
           <Button variant="outline" onPress={handleSwiped} icon="x" style={styles.actionButton}>
             Ohita
           </Button>
+          <TouchableOpacity
+            style={styles.detailButton}
+            onPress={() => setDetailApartment(apartments[currentIndex])}
+            disabled={currentIndex >= apartments.length}
+          >
+            <Feather name="info" size={22} color={Colors.text.primary} />
+          </TouchableOpacity>
           <Button onPress={handleSwiped} icon="heart" style={styles.actionButton}>
             Kiinnostaa
           </Button>
@@ -250,6 +414,8 @@ const BrowseScreen = () => {
           {currentIndex + 1} / {apartments.length}
         </Text>
       </View>
+
+      <ApartmentDetailModal apartment={detailApartment} onClose={() => setDetailApartment(null)} />
     </View>
   );
 };
@@ -423,6 +589,20 @@ const styles = StyleSheet.create({
     flex: 1,
   },
 
+  detailButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
   counter: {
     position: 'absolute',
     bottom: 85,
@@ -454,6 +634,135 @@ const styles = StyleSheet.create({
     fontSize: Typography.size.base,
     color: Colors.text.muted,
     textAlign: 'center',
+  },
+
+  tapZoneLeft: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: '35%',
+    zIndex: 15,
+  },
+  tapZoneRight: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: '35%',
+    zIndex: 15,
+  },
+  imageDots: {
+    position: 'absolute',
+    top: Spacing.xl + 28,
+    left: Spacing.md,
+    right: Spacing.md,
+    flexDirection: 'row',
+    gap: 4,
+    zIndex: 16,
+  },
+  imageDotTrack: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+    overflow: 'hidden',
+  },
+  imageDotFill: {
+    height: '100%',
+    width: 0,
+    backgroundColor: '#ffffff',
+  },
+  imageDotFillActive: {
+    width: '100%',
+  },
+
+  // Detail modal
+  detailContainer: {
+    flex: 1,
+    backgroundColor: Colors.background,
+  },
+  gallery: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.55,
+    backgroundColor: '#222',
+  },
+  galleryImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.55,
+  },
+  galleryDots: {
+    position: 'absolute',
+    bottom: Spacing.md,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  galleryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+  },
+  galleryDotActive: {
+    backgroundColor: '#ffffff',
+    width: 18,
+  },
+  closeButton: {
+    position: 'absolute',
+    top: Spacing.xl + 28,
+    right: Spacing.md,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  detailBody: {
+    padding: Spacing.xl,
+  },
+  detailTitle: {
+    fontSize: Typography.size['2xl'],
+    fontWeight: Typography.weight.bold,
+    color: Colors.text.primary,
+    marginBottom: Spacing.xs,
+  },
+  detailLocation: {
+    fontSize: Typography.size.base,
+    color: Colors.text.muted,
+    marginLeft: Spacing.xs,
+  },
+  detailRent: {
+    fontSize: Typography.size['2xl'],
+    fontWeight: Typography.weight.bold,
+    color: Colors.primary.main,
+    marginTop: Spacing.md,
+    marginBottom: Spacing.md,
+  },
+  detailStatsRow: {
+    flexDirection: 'row',
+    gap: Spacing.lg,
+    marginBottom: Spacing.md,
+  },
+  detailStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  detailStatText: {
+    fontSize: Typography.size.sm,
+    color: Colors.text.muted,
+  },
+  ownerBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border ?? '#E5E7EB',
   },
 });
 

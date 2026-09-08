@@ -104,6 +104,9 @@ export const authService = {
         responseType: AuthSession.ResponseType.Code,
         scopes: ENTRA_CONFIG.SCOPES,
         usePKCE: true, // Proof Key for Code Exchange (turvallisuus)
+        extraParams: {
+          prompt: 'select_account', // Pakota tilinvalinta, älä käytä SSO-istuntoa automaattisesti
+        },
       };
 
       const request = new AuthSession.AuthRequest(authRequestConfig);

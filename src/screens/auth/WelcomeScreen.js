@@ -13,6 +13,7 @@ import * as SecureStore from 'expo-secure-store';
 import Button from '../../components/common/Button';
 import { useAuth } from '../../context/AuthContext';
 import authService from '../../services/authService';
+import userService from '../../services/userService';
 import { STORAGE_KEYS } from '../../constants';
 import { Colors, Typography, Spacing, CommonStyles } from '../../theme';
 
@@ -61,8 +62,19 @@ const WelcomeScreen = ({ navigation }) => {
           
           if (existingProfile) {
             console.log('📋 Profile already exists, skipping CompleteProfile');
-            console.log('Profile data preview:', existingProfile.substring(0, 100));
-            // Profiili on jo olemassa - aseta vain rooli ja anna AppNavigatorin navigoida
+
+            // Varmista että käyttäjä on rekisteröity backendiin (409 = jo olemassa = ok)
+            try {
+              await userService.register(result.userId, role);
+              console.log('✅ User registered in backend');
+            } catch (e) {
+              if (e.status === 409) {
+                console.log('ℹ️ User already exists in backend');
+              } else {
+                console.error('❌ Backend registration failed:', e.userMessage ?? e.message);
+              }
+            }
+
             const roleResult = await setUserRole(result.userId, role);
             if (!roleResult.success) {
               console.error('❌ Failed to set user role:', roleResult.error);

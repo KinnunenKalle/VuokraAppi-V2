@@ -11,9 +11,6 @@ export const API_ENDPOINTS = {
   // Apartments
   APARTMENTS: '/v1/apartments', // ← Lisää /v1/ tähänkin
   APARTMENT_BY_ID: (id) => `/v1/apartments/${id}`,
-  
-  // Listings (AI)
-  GENERATE_LISTING: (apartmentId) => `/v1/listings/apartments/${apartmentId}/generate`,
 };
 
 // Azure Entra ID (CIAM) Configuration
@@ -30,7 +27,7 @@ export const ENTRA_CONFIG = {
     'profile', 
     'email',
     'offline_access',
-    'api://ea427158-f1f3-47af-b515-8da8a2744379/user_impersonation', // ← LISÄÄ TÄMÄ!
+    'api://3f790413-a01c-4d36-9823-dbc0ed63bc67/user_impersonation', // ← LISÄÄ TÄMÄ!
   ],
   
   REDIRECT_URI_SCHEME: 'vuokraappi',

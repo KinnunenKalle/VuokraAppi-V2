@@ -17,7 +17,7 @@ async getAccessToken() {
   try {
     // Käytä ACCESS tokenia
     const accessToken = await SecureStore.getItemAsync(STORAGE_KEYS.ACCESS_TOKEN);
-    console.log('🔑 Using ACCESS token (first 50):', accessToken?.substring(0, 50));
+    // console.log('🔑 Full ACCESS token:', accessToken);
     return accessToken;
   } catch (error) {
     console.error('Error getting access token:', error);
@@ -31,9 +31,13 @@ async getAccessToken() {
   async createHeaders(includeAuth = true, customHeaders = {}) {
   const headers = {
     'Content-Type': 'application/json',
-    'Ocp-Apim-Subscription-Key': 'TÄHÄN_API_GATEWAY_KEY', // ← LISÄÄ TÄMÄ!
     ...customHeaders,
   };
+
+  const subscriptionKey = process.env.EXPO_PUBLIC_API_SUBSCRIPTION_KEY;
+  if (subscriptionKey) {
+    headers['Ocp-Apim-Subscription-Key'] = subscriptionKey;
+  }
 
   if (includeAuth) {
     const token = await this.getAccessToken();
@@ -52,16 +56,33 @@ async getAccessToken() {
     const contentType = response.headers.get('content-type');
     const isJson = contentType && contentType.includes('application/json');
 
-    // Parse response body
+    // Luetaan vastaus aina tekstinä ja parsitaan itse, jotta epäkelpo/tyhjä JSON-runko
+    // ei kaadu hiljaisesti response.json()-kutsuun eikä jää lokittamatta.
+    const rawText = await response.text();
     let data;
     if (isJson) {
-      data = await response.json();
+      try {
+        data = rawText ? JSON.parse(rawText) : null;
+      } catch (parseError) {
+        console.error(
+          `❌ JSON parse error ${response.status} [${response.url}]:`,
+          parseError.message,
+          '— raw body:',
+          rawText?.slice(0, 500)
+        );
+        const error = new Error('Palvelin palautti virheellisen vastauksen.');
+        error.status = response.status;
+        error.userMessage = ERROR_MESSAGES.SERVER_ERROR;
+        error.rawBody = rawText;
+        throw error;
+      }
     } else {
-      data = await response.text();
+      data = rawText;
     }
 
     // Handle errors
     if (!response.ok) {
+      console.error(`❌ API Error ${response.status} [${response.url}]:`, JSON.stringify(data));
       const error = new Error(data?.message || ERROR_MESSAGES.SERVER_ERROR);
       error.status = response.status;
       error.data = data;
@@ -113,6 +134,10 @@ async getAccessToken() {
 
       return await this.handleResponse(response);
     } catch (error) {
+      if (error.status === undefined) {
+        // Ei tullut handleResponse:sta (joka lokittaa jo itse) — eli fetch/verkkotason poikkeus.
+        console.error(`❌ Request failed [${endpoint}]:`, error.message);
+      }
       if (error.message === 'Network request failed') {
         error.userMessage = ERROR_MESSAGES.NETWORK_ERROR;
       }
@@ -126,7 +151,8 @@ async getAccessToken() {
   async post(endpoint, body, options = {}) {
     try {
       const headers = await this.createHeaders(options.includeAuth !== false);
-      
+      console.log(`➡️ POST ${endpoint}`, { hasAuth: !!headers.Authorization, hasSubKey: !!headers['Ocp-Apim-Subscription-Key'] });
+
       const response = await fetch(`${this.baseURL}${endpoint}`, {
         method: 'POST',
         headers,
@@ -136,6 +162,10 @@ async getAccessToken() {
 
       return await this.handleResponse(response);
     } catch (error) {
+      if (error.status === undefined) {
+        // Ei tullut handleResponse:sta (joka lokittaa jo itse) — eli fetch/verkkotason poikkeus.
+        console.error(`❌ Request failed [${endpoint}]:`, error.message);
+      }
       if (error.message === 'Network request failed') {
         error.userMessage = ERROR_MESSAGES.NETWORK_ERROR;
       }
@@ -159,6 +189,10 @@ async getAccessToken() {
 
       return await this.handleResponse(response);
     } catch (error) {
+      if (error.status === undefined) {
+        // Ei tullut handleResponse:sta (joka lokittaa jo itse) — eli fetch/verkkotason poikkeus.
+        console.error(`❌ Request failed [${endpoint}]:`, error.message);
+      }
       if (error.message === 'Network request failed') {
         error.userMessage = ERROR_MESSAGES.NETWORK_ERROR;
       }
@@ -186,6 +220,10 @@ async getAccessToken() {
 
       return await this.handleResponse(response);
     } catch (error) {
+      if (error.status === undefined) {
+        // Ei tullut handleResponse:sta (joka lokittaa jo itse) — eli fetch/verkkotason poikkeus.
+        console.error(`❌ Request failed [${endpoint}]:`, error.message);
+      }
       if (error.message === 'Network request failed') {
         error.userMessage = ERROR_MESSAGES.NETWORK_ERROR;
       }

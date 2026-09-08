@@ -5,10 +5,6 @@
     "version": "2.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
-    "splash": {
-      "resizeMode": "contain",
-      "backgroundColor": "#f8fafc"
-    },
     "assetBundlePatterns": [
       "**/*"
     ],
@@ -22,6 +18,12 @@
       },
       "package": "com.vuokraappi.app"
     },
-    "scheme": "vuokraappi"
+    "scheme": "vuokraappi",
+    "plugins": [
+      "expo-secure-store",
+      "expo-status-bar",
+      "expo-web-browser",
+      "expo-font"
+    ]
   }
 }
