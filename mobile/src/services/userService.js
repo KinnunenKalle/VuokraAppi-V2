@@ -64,6 +64,22 @@ export const userService = {
   },
 
   /**
+   * Hae vuokralaisia hakuehdoilla (vuokranantajan käyttöön)
+   * @param {string} userId - Hakevan vuokranantajan ID
+   * @param {Object} filters - minIncome, maxIncome, occupation, hasPet, minAge, maxAge, city, identityVerified
+   * @returns {Promise<Array>} Lista vuokralaisista
+   */
+  async searchTenants(userId, filters = {}) {
+    if (!userId) throw new Error('userId on pakollinen');
+    const params = Object.entries(filters)
+      .filter(([, v]) => v !== undefined && v !== null && v !== '')
+      .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+      .join('&');
+    const query = params ? `?${params}` : '';
+    return await apiClient.get(`/v1/users/${userId}/tenants/search${query}`);
+  },
+
+  /**
    * Poista käyttäjä
    * @param {string} userId - Käyttäjän ID
    * @returns {Promise<void>}
