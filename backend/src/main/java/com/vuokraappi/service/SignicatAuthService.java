@@ -165,6 +165,8 @@ public class SignicatAuthService {
             .bodyToMono(String.class)
             .block();
 
+        log.info("Signicat userinfo raw response: {}", raw);
+
         try {
             if (raw != null && raw.trim().startsWith("{")) {
                 return new com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, Map.class);
@@ -173,7 +175,7 @@ public class SignicatAuthService {
             // varmennusta (luotettu kanava, suora TLS-yhteys Signicatiin).
             return JWTParser.parse(raw).getJWTClaimsSet().getClaims();
         } catch (Exception e) {
-            throw new IllegalStateException("Userinfo-vastauksen jäsennys epäonnistui", e);
+            throw new IllegalStateException("Userinfo-vastauksen jäsennys epäonnistui: " + e.getMessage(), e);
         }
     }
 
