@@ -7,6 +7,7 @@ import com.vuokraappi.exception.ResourceNotFoundException;
 import com.vuokraappi.exception.UserNotFoundException;
 import com.vuokraappi.repository.IdentityVerificationRepository;
 import com.vuokraappi.repository.UserRepository;
+import com.nimbusds.jwt.JWTParser;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -154,14 +155,26 @@ public class SignicatAuthService {
             .block();
     }
 
-    @SuppressWarnings("unchecked")
     private Map<String, Object> fetchUserInfo(String accessToken) {
-        return webClient.get()
+        // Signicat allekirjoittaa userinfo-vastauksen JWT:nä (Content-Type: application/jwt)
+        // arkaluontoisen datan (nin) takia — ei pelkkänä JSON:ina.
+        String raw = webClient.get()
             .uri(properties.getBaseUrl() + "/connect/userinfo")
             .header("Authorization", "Bearer " + accessToken)
             .retrieve()
-            .bodyToMono(Map.class)
+            .bodyToMono(String.class)
             .block();
+
+        try {
+            if (raw != null && raw.trim().startsWith("{")) {
+                return new com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, Map.class);
+            }
+            // JWT-muotoinen vastaus — puretaan claimit ilman allekirjoituksen
+            // varmennusta (luotettu kanava, suora TLS-yhteys Signicatiin).
+            return JWTParser.parse(raw).getJWTClaimsSet().getClaims();
+        } catch (Exception e) {
+            throw new IllegalStateException("Userinfo-vastauksen jäsennys epäonnistui", e);
+        }
     }
 
     /**

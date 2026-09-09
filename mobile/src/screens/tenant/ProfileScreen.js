@@ -39,6 +39,7 @@ const ProfileScreen = ({ navigation }) => {
     setCheckingStatus(true);
     try {
       const backendProfile = await userService.getProfile(user.id);
+      console.log('🪪 Backend profile identityVerified:', backendProfile?.identityVerified, 'full:', JSON.stringify(backendProfile));
       setIdentityVerified(!!backendProfile?.identityVerified);
     } catch (error) {
       console.error('Error checking identity verification status:', error);
@@ -59,8 +60,10 @@ const ProfileScreen = ({ navigation }) => {
     setVerifying(true);
     try {
       const { redirectUrl } = await identityService.startVerification(user.id);
-      await WebBrowser.openBrowserAsync(redirectUrl);
-      // Käyttäjä palaa selaimesta manuaalisesti — tarkista tila palatessa (useFocusEffect hoitaa tämän)
+      // openAuthSessionAsync (ASWebAuthenticationSession) osaa palata custom-skeema-
+      // redirectillä appiin — openBrowserAsync (SFSafariViewController) ei pysty siihen.
+      const result = await WebBrowser.openAuthSessionAsync(redirectUrl, 'vuokraappi://identity-verified');
+      console.log('🪪 Auth session result:', JSON.stringify(result));
       await refreshVerificationStatus();
     } catch (error) {
       Alert.alert('Virhe', error.userMessage ?? 'Tunnistautumisen käynnistys epäonnistui.');

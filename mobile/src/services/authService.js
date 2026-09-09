@@ -100,32 +100,48 @@ export const authService = {
   },
 
   /**
-   * Hae uusi access token refresh tokenilla
+   * Hae uusi access token refresh tokenilla.
+   *
+   * Refresh tokenit ovat kertakäyttöisiä (Entra rotatoi ne) — jos kaksi kutsua
+   * yrittäisi uusia samaan aikaan, jälkimmäinen käyttäisi jo mitätöityä tokenia
+   * ja epäonnistuisi. Siksi samanaikaiset kutsut jaetaan yhteen käynnissä olevaan
+   * pyyntöön (_refreshPromise) sen sijaan että kumpikin tekisi oman.
    */
+  _refreshPromise: null,
   async refreshTokens(refreshToken) {
-    try {
-      const tokenResult = await AuthSession.refreshAsync(
-        {
-          clientId: ENTRA_CONFIG.CLIENT_ID,
-          refreshToken,
-        },
-        {
-          tokenEndpoint: ENTRA_CONFIG.TOKEN_ENDPOINT,
-        }
-      );
-
-      await this.saveTokens({
-        accessToken: tokenResult.accessToken,
-        idToken: tokenResult.idToken,
-        // Entra ei aina palauta uutta refresh tokenia — säilytä vanha jos ei tullut uutta
-        refreshToken: tokenResult.refreshToken || refreshToken,
-      });
-
-      return tokenResult.accessToken;
-    } catch (error) {
-      console.error('Token refresh failed:', error);
-      return null;
+    if (this._refreshPromise) {
+      return this._refreshPromise;
     }
+
+    this._refreshPromise = (async () => {
+      try {
+        const tokenResult = await AuthSession.refreshAsync(
+          {
+            clientId: ENTRA_CONFIG.CLIENT_ID,
+            refreshToken,
+          },
+          {
+            tokenEndpoint: ENTRA_CONFIG.TOKEN_ENDPOINT,
+          }
+        );
+
+        await this.saveTokens({
+          accessToken: tokenResult.accessToken,
+          idToken: tokenResult.idToken,
+          // Entra ei aina palauta uutta refresh tokenia — säilytä vanha jos ei tullut uutta
+          refreshToken: tokenResult.refreshToken || refreshToken,
+        });
+
+        return tokenResult.accessToken;
+      } catch (error) {
+        console.error('Token refresh failed:', error);
+        return null;
+      } finally {
+        this._refreshPromise = null;
+      }
+    })();
+
+    return this._refreshPromise;
   },
 
   /**
@@ -134,14 +150,24 @@ export const authService = {
    */
   async getValidAccessToken() {
     const { accessToken, refreshToken } = await this.getTokens();
+    console.log('🔑 getValidAccessToken:', {
+      hasAccessToken: !!accessToken,
+      hasRefreshToken: !!refreshToken,
+      expired: accessToken ? this.isTokenExpired(accessToken) : null,
+    });
     if (!accessToken) return null;
 
     if (!this.isTokenExpired(accessToken)) {
       return accessToken;
     }
-    if (!refreshToken) return null;
+    if (!refreshToken) {
+      console.log('🔑 No refresh token available, returning null');
+      return null;
+    }
 
-    return this.refreshTokens(refreshToken);
+    const refreshed = await this.refreshTokens(refreshToken);
+    console.log('🔑 refreshTokens result:', refreshed ? 'got new token' : 'FAILED (null)');
+    return refreshed;
   },
 
   /**

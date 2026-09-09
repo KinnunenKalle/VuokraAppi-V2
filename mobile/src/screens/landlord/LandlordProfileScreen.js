@@ -50,7 +50,9 @@ const LandlordProfileScreen = () => {
     setVerifying(true);
     try {
       const { redirectUrl } = await identityService.startVerification(user.id);
-      await WebBrowser.openBrowserAsync(redirectUrl);
+      // openAuthSessionAsync (ASWebAuthenticationSession) osaa palata custom-skeema-
+      // redirectillä appiin — openBrowserAsync (SFSafariViewController) ei pysty siihen.
+      await WebBrowser.openAuthSessionAsync(redirectUrl, 'vuokraappi://identity-verified');
       await refreshVerificationStatus();
     } catch (error) {
       Alert.alert('Virhe', error.userMessage ?? 'Tunnistautumisen käynnistys epäonnistui.');
