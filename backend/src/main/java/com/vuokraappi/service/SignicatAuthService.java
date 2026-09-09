@@ -8,6 +8,9 @@ import com.vuokraappi.exception.UserNotFoundException;
 import com.vuokraappi.repository.IdentityVerificationRepository;
 import com.vuokraappi.repository.UserRepository;
 import com.nimbusds.jwt.JWTParser;
+import com.nimbusds.jwt.EncryptedJWT;
+import com.nimbusds.jwt.SignedJWT;
+import com.nimbusds.jose.crypto.RSADecrypter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -21,7 +24,10 @@ import javax.crypto.Mac;
 import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
+import java.security.KeyFactory;
 import java.security.SecureRandom;
+import java.security.interfaces.RSAPrivateKey;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -156,8 +162,8 @@ public class SignicatAuthService {
     }
 
     private Map<String, Object> fetchUserInfo(String accessToken) {
-        // Signicat allekirjoittaa userinfo-vastauksen JWT:nä (Content-Type: application/jwt)
-        // arkaluontoisen datan (nin) takia — ei pelkkänä JSON:ina.
+        // Signicat sekä allekirjoittaa että salaa (JWE) userinfo-vastauksen
+        // arkaluontoisen datan (nin) takia — ei palauta pelkkää JSON:ia.
         String raw = webClient.get()
             .uri(properties.getBaseUrl() + "/connect/userinfo")
             .header("Authorization", "Bearer " + accessToken)
@@ -165,18 +171,32 @@ public class SignicatAuthService {
             .bodyToMono(String.class)
             .block();
 
-        log.info("Signicat userinfo raw response: {}", raw);
-
         try {
             if (raw != null && raw.trim().startsWith("{")) {
                 return new com.fasterxml.jackson.databind.ObjectMapper().readValue(raw, Map.class);
             }
-            // JWT-muotoinen vastaus — puretaan claimit ilman allekirjoituksen
-            // varmennusta (luotettu kanava, suora TLS-yhteys Signicatiin).
-            return JWTParser.parse(raw).getJWTClaimsSet().getClaims();
+
+            com.nimbusds.jwt.JWT parsed = JWTParser.parse(raw);
+
+            if (parsed instanceof EncryptedJWT encryptedJwt) {
+                encryptedJwt.decrypt(new RSADecrypter(getUserinfoPrivateKey()));
+                // cty=JWT → salauksen sisällä on vielä allekirjoitettu JWT (nested)
+                String innerJwt = encryptedJwt.getPayload().toString();
+                return SignedJWT.parse(innerJwt).getJWTClaimsSet().getClaims();
+            }
+
+            // Pelkkä allekirjoitettu JWT (ei salattu) — puretaan claimit ilman
+            // allekirjoituksen varmennusta (luotettu kanava, suora TLS-yhteys Signicatiin).
+            return parsed.getJWTClaimsSet().getClaims();
         } catch (Exception e) {
             throw new IllegalStateException("Userinfo-vastauksen jäsennys epäonnistui: " + e.getMessage(), e);
         }
+    }
+
+    private RSAPrivateKey getUserinfoPrivateKey() throws Exception {
+        byte[] keyBytes = Base64.getDecoder().decode(properties.getUserinfoPrivateKey());
+        KeyFactory kf = KeyFactory.getInstance("RSA");
+        return (RSAPrivateKey) kf.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
     }
 
     /**

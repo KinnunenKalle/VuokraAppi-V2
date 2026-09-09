@@ -21,3 +21,4 @@ signicat:
   frontend-redirect-url: ${SIGNICAT_FRONTEND_REDIRECT_URL:http://localhost:3000/identity-verified}
   lookup-secret: ${IDENTITY-LOOKUP-SECRET:}
   encryption-key: ${IDENTITY-ENCRYPTION-KEY:}
+  userinfo-private-key: ${SIGNICAT_USERINFO_PRIVATE_KEY:}

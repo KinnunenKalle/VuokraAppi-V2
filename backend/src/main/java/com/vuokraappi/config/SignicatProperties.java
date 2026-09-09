@@ -42,6 +42,13 @@ public class SignicatProperties {
      */
     private String encryptionKey;
 
+    /**
+     * RSA-yksityisavain (PKCS8, base64-enkoodattu DER) Signicatin salatun
+     * userinfo-vastauksen (JWE) purkuun. Julkinen avain on rekisteröity
+     * Signicatin dashboardiin. Ympäristömuuttuja: SIGNICAT_USERINFO_PRIVATE_KEY
+     */
+    private String userinfoPrivateKey;
+
     public byte[] getEncryptionKeyBytes() {
         return Base64.getDecoder().decode(encryptionKey);
     }
