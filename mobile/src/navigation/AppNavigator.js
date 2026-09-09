@@ -15,6 +15,7 @@ import LandlordHomeScreen from '../screens/landlord/LandlordHomeScreen';
 import MyApartmentsScreen from '../screens/landlord/MyApartmentsScreen';
 import AddApartmentScreen from '../screens/landlord/AddApartmentScreen';
 import BrowseTenantsScreen from '../screens/landlord/BrowseTenantsScreen';
+import LandlordProfileScreen from '../screens/landlord/LandlordProfileScreen';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -27,7 +28,7 @@ const LandlordTabs = () => (
       tabBarInactiveTintColor: Colors.text.muted,
       tabBarStyle: { borderTopColor: Colors.border ?? '#E5E7EB' },
       tabBarIcon: ({ color, size }) => {
-        const icons = { Koti: 'home', Kohteet: 'list', Vuokralaiset: 'users' };
+        const icons = { Koti: 'home', Kohteet: 'list', Vuokralaiset: 'users', Profiili: 'user' };
         return <Feather name={icons[route.name]} size={size} color={color} />;
       },
     })}
@@ -35,6 +36,7 @@ const LandlordTabs = () => (
     <Tab.Screen name="Koti" component={LandlordHomeScreen} />
     <Tab.Screen name="Kohteet" component={MyApartmentsStack} />
     <Tab.Screen name="Vuokralaiset" component={BrowseTenantsScreen} />
+    <Tab.Screen name="Profiili" component={LandlordProfileScreen} />
   </Tab.Navigator>
 );
 

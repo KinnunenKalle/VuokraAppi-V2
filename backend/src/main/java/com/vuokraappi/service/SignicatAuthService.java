@@ -63,10 +63,10 @@ public class SignicatAuthService {
         String state = UUID.randomUUID().toString();
         pendingStates.put(state, new StateEntry(userId, Instant.now().plusSeconds(600)));
 
-        return properties.getBaseUrl() + "/authorize" +
+        return properties.getBaseUrl() + "/connect/authorize" +
             "?client_id=" + properties.getClientId() +
             "&response_type=code" +
-            "&scope=openid+profile+signicat.national_id" +
+            "&scope=openid+profile+nin" +
             "&redirect_uri=" + encodeUrl(properties.getRedirectUri()) +
             "&state=" + state +
             "&acr_values=urn:signicat:oidc:method:ftn" +
@@ -101,7 +101,7 @@ public class SignicatAuthService {
         userRepository.save(user);
 
         // Tallennetaan salattu henkilötunnus erilliseen tauluun ilman suoraa FK:ta
-        String nationalId = (String) userInfo.get("signicat.national_id");
+        String nationalId = (String) userInfo.get("nin");
         if (nationalId != null) {
             UUID lookupId = computeLookupId(userId);
             IdentityVerification verification = new IdentityVerification();
@@ -143,7 +143,7 @@ public class SignicatAuthService {
             (properties.getClientId() + ":" + properties.getClientSecret()).getBytes());
 
         return webClient.post()
-            .uri(properties.getBaseUrl() + "/token")
+            .uri(properties.getBaseUrl() + "/connect/token")
             .header("Authorization", "Basic " + credentials)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(BodyInserters.fromFormData("grant_type", "authorization_code")
@@ -157,7 +157,7 @@ public class SignicatAuthService {
     @SuppressWarnings("unchecked")
     private Map<String, Object> fetchUserInfo(String accessToken) {
         return webClient.get()
-            .uri(properties.getBaseUrl() + "/userinfo")
+            .uri(properties.getBaseUrl() + "/connect/userinfo")
             .header("Authorization", "Bearer " + accessToken)
             .retrieve()
             .bodyToMono(Map.class)

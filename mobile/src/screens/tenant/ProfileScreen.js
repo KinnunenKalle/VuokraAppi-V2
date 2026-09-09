@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -7,13 +7,18 @@ import {
   ScrollView,
   TouchableOpacity,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
+import * as WebBrowser from 'expo-web-browser';
+import { useFocusEffect } from '@react-navigation/native';
 import Button from '../../components/common/Button';
 import { useAuth } from '../../context/AuthContext';
 import { STORAGE_KEYS } from '../../constants';
 import { Colors, Typography, Spacing, BorderRadius } from '../../theme';
+import userService from '../../services/userService';
+import identityService from '../../services/identityService';
  
 /**
  * Profile Screen - Profiili ja asetukset
@@ -21,10 +26,48 @@ import { Colors, Typography, Spacing, BorderRadius } from '../../theme';
 const ProfileScreen = ({ navigation }) => {
   const { user, profile, signOut } = useAuth();
   const [userProfile, setUserProfile] = useState(null);
- 
+  const [identityVerified, setIdentityVerified] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [checkingStatus, setCheckingStatus] = useState(false);
+
   useEffect(() => {
     loadProfile();
   }, [profile]);
+
+  const refreshVerificationStatus = useCallback(async () => {
+    if (!user?.id) return;
+    setCheckingStatus(true);
+    try {
+      const backendProfile = await userService.getProfile(user.id);
+      setIdentityVerified(!!backendProfile?.identityVerified);
+    } catch (error) {
+      console.error('Error checking identity verification status:', error);
+    } finally {
+      setCheckingStatus(false);
+    }
+  }, [user?.id]);
+
+  // Päivitä tila aina kun näyttö saa fokuksen (esim. palatessa Signicat-selaimesta)
+  useFocusEffect(
+    useCallback(() => {
+      refreshVerificationStatus();
+    }, [refreshVerificationStatus])
+  );
+
+  const handleVerifyIdentity = async () => {
+    if (!user?.id) return;
+    setVerifying(true);
+    try {
+      const { redirectUrl } = await identityService.startVerification(user.id);
+      await WebBrowser.openBrowserAsync(redirectUrl);
+      // Käyttäjä palaa selaimesta manuaalisesti — tarkista tila palatessa (useFocusEffect hoitaa tämän)
+      await refreshVerificationStatus();
+    } catch (error) {
+      Alert.alert('Virhe', error.userMessage ?? 'Tunnistautumisen käynnistys epäonnistui.');
+    } finally {
+      setVerifying(false);
+    }
+  };
  
   const loadProfile = async () => {
     try {
@@ -149,7 +192,47 @@ const ProfileScreen = ({ navigation }) => {
             <Text style={styles.bio}>"{userProfile.bio}"</Text>
           )}
         </View>
- 
+
+        {/* Vahva tunnistautuminen */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Tunnistautuminen</Text>
+          <View style={styles.verifyCard}>
+            {checkingStatus ? (
+              <ActivityIndicator size="small" color={Colors.primary.main} />
+            ) : identityVerified ? (
+              <View style={styles.verifyRow}>
+                <Feather name="check-circle" size={22} color={Colors.success} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.verifyTitle}>Henkilöllisyys vahvistettu</Text>
+                  <Text style={styles.verifySubtitle}>
+                    Vahvistus lisää luottamusta vuokranantajien silmissä.
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <>
+                <View style={styles.verifyRow}>
+                  <Feather name="alert-circle" size={22} color={Colors.warning} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.verifyTitle}>Henkilöllisyyttä ei ole vahvistettu</Text>
+                    <Text style={styles.verifySubtitle}>
+                      Vahvista pankkitunnuksilla tai mobiilivarmenteella lisätäksesi luottamusta.
+                    </Text>
+                  </View>
+                </View>
+                <Button
+                  onPress={handleVerifyIdentity}
+                  loading={verifying}
+                  icon="shield"
+                  style={styles.verifyBtn}
+                >
+                  Vahvista henkilöllisyys
+                </Button>
+              </>
+            )}
+          </View>
+        </View>
+
         {/* Actions */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Asetukset</Text>
@@ -391,6 +474,37 @@ const styles = StyleSheet.create({
  
   signOutButton: {
     marginTop: Spacing.md,
+  },
+
+  verifyCard: {
+    backgroundColor: Colors.surface,
+    borderRadius: BorderRadius.lg,
+    padding: Spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  verifyRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
+  },
+  verifyTitle: {
+    fontSize: Typography.size.base,
+    fontWeight: Typography.weight.semibold,
+    color: Colors.text.primary,
+    marginBottom: 2,
+  },
+  verifySubtitle: {
+    fontSize: Typography.size.sm,
+    color: Colors.text.muted,
+    lineHeight: 18,
+  },
+  verifyBtn: {
+    marginTop: Spacing.xs,
   },
 });
  
