@@ -19,6 +19,6 @@ signicat:
   base-url: ${SIGNICAT_BASE_URL:https://id.test.signicat.com/oidc}
   redirect-uri: ${SIGNICAT_REDIRECT_URI:http://localhost:8080/v1/identity/verify/callback}
   frontend-redirect-url: ${SIGNICAT_FRONTEND_REDIRECT_URL:http://localhost:3000/identity-verified}
-  lookup-secret: ${IDENTITY-LOOKUP-SECRET:}
-  encryption-key: ${IDENTITY-ENCRYPTION-KEY:}
+  lookup-secret: ${IDENTITY_LOOKUP_SECRET:}
+  encryption-key: ${IDENTITY_ENCRYPTION_KEY:}
   userinfo-private-key: ${SIGNICAT_USERINFO_PRIVATE_KEY:}
