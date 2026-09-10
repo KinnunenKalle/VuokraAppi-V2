@@ -55,6 +55,16 @@ microsoft:
       base-url: https://graph.microsoft.com/v1.0
       timeout: 30000
 
+signicat:
+  client-id: ${SIGNICAT_CLIENT_ID:}
+  client-secret: ${SIGNICAT_CLIENT_SECRET:}
+  base-url: ${SIGNICAT_BASE_URL:}
+  redirect-uri: ${SIGNICAT_REDIRECT_URI:}
+  frontend-redirect-url: ${SIGNICAT_FRONTEND_REDIRECT_URL:}
+  lookup-secret: ${IDENTITY-LOOKUP-SECRET:}
+  encryption-key: ${IDENTITY-ENCRYPTION-KEY:}
+  userinfo-private-key: ${SIGNICAT_USERINFO_PRIVATE_KEY:}
+
 # Azure Application Insights (optional)
 # azure:
 #   application-insights:
