@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import java.net.URI;
 import java.util.Map;
@@ -54,6 +55,12 @@ public class IdentityVerificationController {
             log.info("Identity verification completed successfully");
             return ResponseEntity.status(302)
                 .location(URI.create(signicatProperties.getFrontendRedirectUrl() + "?success=true"))
+                .build();
+        } catch (WebClientResponseException e) {
+            log.error("Identity verification failed: {} {} - response body: {}",
+                e.getStatusCode(), e.getMessage(), e.getResponseBodyAsString(), e);
+            return ResponseEntity.status(302)
+                .location(URI.create(signicatProperties.getFrontendRedirectUrl() + "?success=false"))
                 .build();
         } catch (Exception e) {
             log.error("Identity verification failed: {}", e.getMessage(), e);

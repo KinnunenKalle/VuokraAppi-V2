@@ -146,8 +146,15 @@ public class SignicatAuthService {
 
     @SuppressWarnings("unchecked")
     private Map<String, Object> exchangeCodeForToken(String code) {
+        // RFC 6749 2.3.1: client_id ja client_secret enkoodataan (Appendix B)
+        // ennen kaksoispisteellä yhdistämistä ja Base64:ää, jotta erikoismerkit
+        // secretissä eivät riko Basic-authia.
+        String encodedClientId = org.springframework.web.util.UriUtils.encode(
+            properties.getClientId(), java.nio.charset.StandardCharsets.UTF_8);
+        String encodedClientSecret = org.springframework.web.util.UriUtils.encode(
+            properties.getClientSecret(), java.nio.charset.StandardCharsets.UTF_8);
         String credentials = Base64.getEncoder().encodeToString(
-            (properties.getClientId() + ":" + properties.getClientSecret()).getBytes());
+            (encodedClientId + ":" + encodedClientSecret).getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         return webClient.post()
             .uri(properties.getBaseUrl() + "/connect/token")
@@ -179,10 +186,23 @@ public class SignicatAuthService {
             com.nimbusds.jwt.JWT parsed = JWTParser.parse(raw);
 
             if (parsed instanceof EncryptedJWT encryptedJwt) {
+                log.info("Userinfo JWE header: kid={}, alg={}, enc={}",
+                    encryptedJwt.getHeader().getKeyID(),
+                    encryptedJwt.getHeader().getAlgorithm(),
+                    encryptedJwt.getHeader().getEncryptionMethod());
                 encryptedJwt.decrypt(new RSADecrypter(getUserinfoPrivateKey()));
-                // cty=JWT → salauksen sisällä on vielä allekirjoitettu JWT (nested)
-                String innerJwt = encryptedJwt.getPayload().toString();
-                return SignedJWT.parse(innerJwt).getJWTClaimsSet().getClaims();
+                com.nimbusds.jose.Payload payload = encryptedJwt.getPayload();
+                String payloadString = payload.toString();
+
+                // cty=JWT → salauksen sisällä on vielä allekirjoitettu JWT (nested).
+                // Signicatin sandbox palauttaa kuitenkin tässä suoraan JSON-muotoiset
+                // claimit ilman sisäkkäistä allekirjoitusta, joten sisältö täytyy
+                // tarkistaa ennen JWS-jäsennystä: Payload.toSignedJWT() ei nielaise
+                // java.util.Base64:n IllegalArgumentExceptionia epäkelvosta syötteestä.
+                if (payloadString != null && payloadString.trim().startsWith("{")) {
+                    return payload.toJSONObject();
+                }
+                return SignedJWT.parse(payloadString).getJWTClaimsSet().getClaims();
             }
 
             // Pelkkä allekirjoitettu JWT (ei salattu) — puretaan claimit ilman
@@ -194,7 +214,25 @@ public class SignicatAuthService {
     }
 
     private RSAPrivateKey getUserinfoPrivateKey() throws Exception {
-        byte[] keyBytes = Base64.getDecoder().decode(properties.getUserinfoPrivateKey());
+        String configured = properties.getUserinfoPrivateKey();
+        // Siedetään PEM-muotoa (BEGIN/END-otsikot, rivinvaihdot, ympäröivät
+        // lainausmerkit) sen sijaan, että vaaditaan tarkalleen yksirivinen DER-base64 —
+        // ympäristömuuttujaan liimataan helposti koko PEM-lohko vahingossa.
+        String sanitized = configured == null ? "" : configured
+            .replaceAll("-----BEGIN [^-]+-----", "")
+            .replaceAll("-----END [^-]+-----", "")
+            .replaceAll("[\\s\"']", "");
+        byte[] keyBytes;
+        try {
+            keyBytes = Base64.getDecoder().decode(sanitized);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalStateException(
+                "SIGNICAT_USERINFO_PRIVATE_KEY ei ole kelvollista Base64:ää (pituus=" +
+                (configured == null ? 0 : configured.length()) +
+                "). Tarkista ettei ympäristömuuttujaan ole vahingossa liimattu JSON:ia, " +
+                "lainausmerkkejä tai rivinvaihtoja — arvon pitää olla puhdas yksirivinen " +
+                "Base64-enkoodattu PKCS8 DER -avain.", e);
+        }
         KeyFactory kf = KeyFactory.getInstance("RSA");
         return (RSAPrivateKey) kf.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
     }
