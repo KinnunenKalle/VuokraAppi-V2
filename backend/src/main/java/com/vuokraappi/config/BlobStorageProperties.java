@@ -15,6 +15,9 @@ public class BlobStorageProperties {
     /** Blob container nimi, esim. "apartment-images" */
     private String containerName;
 
+    /** Blob container nimi vuokralaisten kuville, esim. "tenant-images" */
+    private String tenantContainerName;
+
     /**
      * SAS URL:n voimassaoloaika tunteina.
      * Lyhyt aika (esim. 1h) on turvallisempi, mutta vaatii useampia uusintoja.
@@ -31,4 +34,9 @@ public class BlobStorageProperties {
      * Suurin sallittu kuvamäärä per asunto.
      */
     private int maxImagesPerApartment = 10;
+
+    /**
+     * Suurin sallittu kuvamäärä per vuokralainen.
+     */
+    private int maxImagesPerTenant = 5;
 }

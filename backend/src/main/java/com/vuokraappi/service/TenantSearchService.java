@@ -2,7 +2,9 @@ package com.vuokraappi.service;
 
 import com.vuokraappi.dto.TenantResponse;
 import com.vuokraappi.entity.Tenant;
+import com.vuokraappi.entity.TenantImage;
 import com.vuokraappi.entity.User;
+import com.vuokraappi.repository.TenantImageRepository;
 import com.vuokraappi.repository.TenantRepository;
 import jakarta.persistence.criteria.Join;
 import jakarta.persistence.criteria.Predicate;
@@ -24,6 +26,8 @@ import java.util.stream.Collectors;
 public class TenantSearchService {
 
     private final TenantRepository tenantRepository;
+    private final TenantImageRepository tenantImageRepository;
+    private final BlobStorageService blobStorageService;
 
     @Transactional(readOnly = true)
     public List<TenantResponse> searchTenants(
@@ -163,6 +167,11 @@ public class TenantSearchService {
         response.setCurrentAddress(tenant.getCurrentAddress());
         response.setPet(tenant.getPet());
         response.setIdentityVerified(user.getIdentityVerified());
+
+        tenantImageRepository.findByTenantIdAndIsPrimaryTrue(tenant.getId())
+                .map(TenantImage::getBlobName)
+                .map(blobStorageService::generateTenantSasUrl)
+                .ifPresent(response::setProfileImageUrl);
 
         return response;
     }

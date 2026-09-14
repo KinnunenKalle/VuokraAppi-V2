@@ -23,6 +23,8 @@ tags:
     description: Apartment CRUD operations
   - name: Apartment Images
     description: Apartment image upload and management
+  - name: Tenant Images
+    description: Tenant profile image upload and management (max 5 images, one marked as profile picture)
   - name: Identity Verification
     description: Strong identity verification via Signicat (Finnish bank IDs, mobile certificate)
   - name: Listings
@@ -362,6 +364,278 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TenantResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
+  # Tenant Images
+  # ---------------------------------------------------------------------------
+
+  /v1/tenants/{tenantId}/images:
+    post:
+      tags:
+        - Tenant Images
+      summary: Upload an image for a tenant
+      description: |
+        Uploads an image file to Azure Blob Storage and associates it with the tenant.
+        The authenticated user must be the tenant themself.
+
+        Accepted content types: `image/jpeg`, `image/png`, `image/webp`.
+        Maximum file size is configured via `azure.storage.max-file-size-bytes` (default 10 MB).
+        Maximum number of images per tenant is configured via `azure.storage.max-images-per-tenant`
+        (default 5). The first uploaded image is automatically set as the profile picture.
+      operationId: uploadTenantImage
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant (same as the user's UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Image file (JPEG, PNG, or WebP)
+      responses:
+        '201':
+          description: Image uploaded successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantImageResponse'
+        '400':
+          description: Invalid file type, disallowed content type, or image count limit reached (max 5)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                status: 400
+                message: "Sinulla on jo maksimimäärä kuvia (5)"
+                timestamp: "2024-02-16T10:30:00"
+        '403':
+          description: Authenticated user is not the tenant themself, or is not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File exceeds the maximum allowed size (default 10 MB)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: Azure Blob Storage communication failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    get:
+      tags:
+        - Tenant Images
+      summary: List images for a tenant
+      description: |
+        Returns all images for the given tenant ordered by `sortOrder` ascending.
+        Requires authentication, but not ownership – e.g. landlords viewing search
+        results can also fetch a tenant's images.
+        Each image contains a short-lived SAS URL. Do not cache the URL for long periods;
+        re-fetch the list to get a fresh URL.
+      operationId: listTenantImages
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: List of images (empty if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TenantImageResponse'
+        '403':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/tenants/{tenantId}/images/{imageId}:
+    patch:
+      tags:
+        - Tenant Images
+      summary: Update image metadata
+      description: |
+        Updates metadata for a single image. All fields are optional.
+
+        Use cases:
+        - `{ "isPrimary": true }` – set as the profile picture (clears the flag on all other images)
+        - `{ "sortOrder": 2 }` – change display order
+      operationId: updateTenantImage
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        - name: imageId
+          in: path
+          required: true
+          description: UUID of the image
+          schema:
+            type: string
+            format: uuid
+          example: "880e8400-e29b-41d4-a716-446655440003"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TenantImageUpdateRequest'
+            examples:
+              setPrimary:
+                summary: Set as profile picture
+                value:
+                  isPrimary: true
+              reorder:
+                summary: Change sort order
+                value:
+                  sortOrder: 2
+      responses:
+        '200':
+          description: Image metadata updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantImageResponse'
+        '400':
+          description: Validation error (e.g. negative sortOrder)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Authenticated user is not the tenant themself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant or image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Tenant Images
+      summary: Delete an image
+      description: |
+        Deletes the image from the database and from Azure Blob Storage.
+        If the deleted image was the profile picture, the next image (by sortOrder) is
+        automatically promoted as the new profile picture.
+      operationId: deleteTenantImage
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        - name: imageId
+          in: path
+          required: true
+          description: UUID of the image to delete
+          schema:
+            type: string
+            format: uuid
+          example: "880e8400-e29b-41d4-a716-446655440003"
+      responses:
+        '204':
+          description: Image deleted successfully (no content)
+        '403':
+          description: Authenticated user is not the tenant themself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tenant or image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Unexpected server error
           content:
@@ -1269,6 +1543,20 @@ components:
           description: Display order (0 = first). Values do not need to be consecutive.
           example: 1
 
+    TenantImageUpdateRequest:
+      type: object
+      description: All fields are optional.
+      properties:
+        isPrimary:
+          type: boolean
+          description: Set this image as the tenant's profile picture
+          example: true
+        sortOrder:
+          type: integer
+          minimum: 0
+          description: Display order (0 = first). Values do not need to be consecutive.
+          example: 1
+
     GenerateListingRequest:
       type: object
       required:
@@ -1468,6 +1756,16 @@ components:
           type: string
           nullable: true
           example: null
+        identityVerified:
+          type: boolean
+          nullable: true
+          description: Whether the tenant has completed strong identity verification via Signicat
+          example: false
+        profileImageUrl:
+          type: string
+          nullable: true
+          description: Short-lived SAS URL to the tenant's profile picture, null if none is set
+          example: "https://storageaccount.blob.core.windows.net/tenant-images/photo.jpg?sv=..."
 
     ApartmentResponse:
       type: object
@@ -1544,6 +1842,39 @@ components:
           example: 0
         isPrimary:
           type: boolean
+          example: true
+        uploadedAt:
+          type: string
+          format: date-time
+          example: "2024-02-16T10:30:00"
+
+    TenantImageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "880e8400-e29b-41d4-a716-446655440003"
+        url:
+          type: string
+          description: Short-lived SAS URL to the image. Valid for azure.storage.sas-expiration-hours hours.
+          example: "https://storageaccount.blob.core.windows.net/tenant-images/photo.jpg?sv=..."
+        filename:
+          type: string
+          example: "photo.jpg"
+        contentType:
+          type: string
+          example: "image/jpeg"
+        fileSizeBytes:
+          type: integer
+          format: int64
+          example: 2457600
+        sortOrder:
+          type: integer
+          example: 0
+        isPrimary:
+          type: boolean
+          description: Whether this image is the tenant's profile picture
           example: true
         uploadedAt:
           type: string

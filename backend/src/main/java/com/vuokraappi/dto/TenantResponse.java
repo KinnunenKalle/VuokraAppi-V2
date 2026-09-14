@@ -52,4 +52,8 @@ public class TenantResponse {
 
     @JsonProperty("identityVerified")
     private Boolean identityVerified;
+
+    /** Lyhytikäinen SAS URL profiilikuvaan, null jos profiilikuvaa ei ole asetettu. */
+    @JsonProperty("profileImageUrl")
+    private String profileImageUrl;
 }

@@ -107,3 +107,27 @@ CREATE TABLE IF NOT EXISTS identity_verifications (
     id UUID PRIMARY KEY,
     encrypted_hetu TEXT NOT NULL
 );
+
+-- Vuokralaisen lataamat kuvat (yksi profiilikuvaksi, loput selattavaksi, max 5 kpl sovellustasolla)
+CREATE TABLE IF NOT EXISTS tenant_images (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    blob_name    VARCHAR(500) NOT NULL,
+    filename     VARCHAR(255),
+    content_type VARCHAR(100),
+    file_size    BIGINT,
+    sort_order   INT         NOT NULL DEFAULT 0,
+    is_primary   BOOLEAN     NOT NULL DEFAULT FALSE,
+    uploaded_at  TIMESTAMP   NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_images_tenant_id
+    ON tenant_images(tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_images_tenant_sort
+    ON tenant_images(tenant_id, sort_order);
+
+-- Constraint: maksimissaan yksi profiilikuva per vuokralainen
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_images_one_primary
+    ON tenant_images(tenant_id)
+    WHERE is_primary = TRUE;

@@ -45,9 +45,11 @@ azure:
   storage:
     connection-string: ${AZURE_STORAGE_CONNECTION_STRING}   # ympäristömuuttuja
     container-name: apartment-images
+    tenant-container-name: tenant-images
     sas-expiration-hours: 1        # SAS URL voimassa 1 tunti
     max-file-size-bytes: 10485760  # 10 MB
     max-images-per-apartment: 10
+    max-images-per-tenant: 5
 
 microsoft:
   graph:
