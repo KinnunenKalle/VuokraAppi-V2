@@ -62,7 +62,11 @@ const ProfileScreen = ({ navigation }) => {
       const { redirectUrl } = await identityService.startVerification(user.id);
       // openAuthSessionAsync (ASWebAuthenticationSession) osaa palata custom-skeema-
       // redirectillä appiin — openBrowserAsync (SFSafariViewController) ei pysty siihen.
-      const result = await WebBrowser.openAuthSessionAsync(redirectUrl, 'vuokraappi://identity-verified');
+      // preferEphemeralSession: pakottaa tuoreen istunnon joka kerta, ettei Signicat
+      // muista edellistä kirjautumista/menetelmää jaettujen selainevästeiden kautta.
+      const result = await WebBrowser.openAuthSessionAsync(redirectUrl, 'vuokraappi://identity-verified', {
+        preferEphemeralSession: true,
+      });
       console.log('🪪 Auth session result:', JSON.stringify(result));
       await refreshVerificationStatus();
     } catch (error) {
