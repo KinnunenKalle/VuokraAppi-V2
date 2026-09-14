@@ -27,6 +27,11 @@ tags:
     description: Tenant profile image upload and management (max 5 images, one marked as profile picture)
   - name: Identity Verification
     description: Strong identity verification via Signicat (Finnish bank IDs, mobile certificate)
+  - name: Swipes & Matches
+    description: |
+      Tinder-style swiping between tenants and landlords, and the resulting matches.
+      A tenant swipes on apartments; a landlord swipes on tenants for a specific apartment.
+      A match is created automatically once both sides have liked the same (tenant, apartment) pair.
   - name: Listings
     description: AI-powered rental listing generation
 
@@ -1338,6 +1343,461 @@ paths:
                 example: "http://localhost:3000/identity-verified?success=true"
 
   # ---------------------------------------------------------------------------
+  # Swipes & Matches
+  # ---------------------------------------------------------------------------
+  /v1/apartments/{apartmentId}/swipes:
+    post:
+      tags:
+        - Swipes & Matches
+      summary: Tenant swipes on an apartment
+      description: |
+        Records the authenticated tenant's swipe decision on an apartment.
+        Re-swiping the same apartment updates the previous decision.
+        If `liked=true` and the apartment's owner has already liked this tenant
+        for this apartment, a match is created automatically and returned.
+      operationId: swipeApartment
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwipeRequest'
+            example:
+              liked: true
+      responses:
+        '200':
+          description: Swipe recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantSwipeResponse'
+        '400':
+          description: Validation error – missing `liked` field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authenticated, or authenticated user is not a tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Apartment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Swipes & Matches
+      summary: Remove a tenant's swipe on an apartment
+      description: |
+        Removes the authenticated tenant's own swipe decision on the apartment.
+        Does not affect a match that may have already been created – use
+        `DELETE /v1/matches/{matchId}` to unmatch.
+      operationId: removeApartmentSwipe
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+      responses:
+        '204':
+          description: Swipe removed (no content)
+        '403':
+          description: Not authenticated, or authenticated user is not a tenant
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/apartments/{apartmentId}/matches:
+    get:
+      tags:
+        - Swipes & Matches
+      summary: List matches for an apartment (landlord use)
+      description: |
+        Returns all matches for the given apartment. The authenticated user
+        must be the owner of the apartment.
+      operationId: listApartmentMatches
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+      responses:
+        '200':
+          description: List of matches (empty if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MatchResponse'
+        '403':
+          description: Not authenticated, or authenticated user is not the owner of the apartment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Apartment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/apartments/{apartmentId}/tenants/{tenantId}/swipes:
+    post:
+      tags:
+        - Swipes & Matches
+      summary: Landlord swipes on a tenant
+      description: |
+        Records the authenticated landlord's swipe decision on a tenant, scoped
+        to a specific apartment the landlord owns. Re-swiping the same tenant
+        for the same apartment updates the previous decision.
+        If `liked=true` and the tenant has already liked this apartment, a
+        match is created automatically and returned.
+      operationId: swipeTenant
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment (must be owned by the authenticated landlord)
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant being swiped on
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwipeRequest'
+            example:
+              liked: true
+      responses:
+        '200':
+          description: Swipe recorded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LandlordSwipeResponse'
+        '400':
+          description: Validation error – missing `liked` field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authenticated, or authenticated user does not own the apartment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Apartment or tenant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Swipes & Matches
+      summary: Remove a landlord's swipe on a tenant
+      description: |
+        Removes the authenticated landlord's own swipe decision on the tenant
+        for the given apartment. Does not affect a match that may have already
+        been created – use `DELETE /v1/matches/{matchId}` to unmatch.
+      operationId: removeTenantSwipe
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment (must be owned by the authenticated landlord)
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '204':
+          description: Swipe removed (no content)
+        '403':
+          description: Not authenticated, or authenticated user does not own the apartment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Apartment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/apartments/{apartmentId}/tenant-swipes:
+    get:
+      tags:
+        - Swipes & Matches
+      summary: List a landlord's own swipes for an apartment
+      description: |
+        Returns all of the authenticated landlord's swipe decisions on tenants
+        for the given apartment (i.e. tenants already handled). The
+        authenticated user must be the owner of the apartment.
+      operationId: listTenantSwipes
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: apartmentId
+          in: path
+          required: true
+          description: UUID of the apartment
+          schema:
+            type: string
+            format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+      responses:
+        '200':
+          description: List of swipes (empty if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LandlordSwipeResponse'
+        '403':
+          description: Not authenticated, or authenticated user is not the owner of the apartment
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Apartment not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/tenants/{tenantId}/swipes:
+    get:
+      tags:
+        - Swipes & Matches
+      summary: List a tenant's own swipes
+      description: |
+        Returns all of the authenticated tenant's swipe decisions on apartments
+        (i.e. apartments already handled). The authenticated user must be the
+        tenant themself.
+      operationId: listSwipes
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant (same as the user's UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: List of swipes (empty if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TenantSwipeResponse'
+        '403':
+          description: Not authenticated, or authenticated user is not the tenant themself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/tenants/{tenantId}/matches:
+    get:
+      tags:
+        - Swipes & Matches
+      summary: List a tenant's own matches
+      description: |
+        Returns all matches for the authenticated tenant. The authenticated
+        user must be the tenant themself.
+      operationId: listMatches
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: tenantId
+          in: path
+          required: true
+          description: UUID of the tenant (same as the user's UUID)
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: List of matches (empty if none)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MatchResponse'
+        '403':
+          description: Not authenticated, or authenticated user is not the tenant themself
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/matches/{matchId}:
+    delete:
+      tags:
+        - Swipes & Matches
+      summary: Unmatch
+      description: |
+        Deletes a match. Either party of the match – the tenant or the
+        landlord who owns the apartment – can unmatch.
+      operationId: unmatch
+      security:
+        - BearerAuth: []
+        - BasicAuth: []
+      parameters:
+        - name: matchId
+          in: path
+          required: true
+          description: UUID of the match to delete
+          schema:
+            type: string
+            format: uuid
+          example: "990e8400-e29b-41d4-a716-446655440004"
+      responses:
+        '204':
+          description: Match deleted (no content)
+        '403':
+          description: Not authenticated, or authenticated user is not a party to this match
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Match not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # ---------------------------------------------------------------------------
   # Listings (AI)
   # ---------------------------------------------------------------------------
   /listings/v1/generate:
@@ -1556,6 +2016,18 @@ components:
           minimum: 0
           description: Display order (0 = first). Values do not need to be consecutive.
           example: 1
+
+    SwipeRequest:
+      type: object
+      required:
+        - liked
+      properties:
+        liked:
+          type: boolean
+          description: |
+            `true` = interested (like), `false` = not interested (pass).
+            Re-swiping the same target updates the previous decision.
+          example: true
 
     GenerateListingRequest:
       type: object
@@ -1877,6 +2349,103 @@ components:
           description: Whether this image is the tenant's profile picture
           example: true
         uploadedAt:
+          type: string
+          format: date-time
+          example: "2024-02-16T10:30:00"
+
+    TenantSwipeResponse:
+      type: object
+      description: |
+        Response for a tenant's swipe action. `matched`/`matchId` indicate whether
+        this swipe resulted in a mutual match – these are not populated in
+        listing calls, only in the response of the swipe action itself.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "aa0e8400-e29b-41d4-a716-446655440005"
+        apartmentId:
+          type: string
+          format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+        liked:
+          type: boolean
+          example: true
+        matched:
+          type: boolean
+          nullable: true
+          example: true
+        matchId:
+          type: string
+          format: uuid
+          nullable: true
+          example: "990e8400-e29b-41d4-a716-446655440004"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-02-16T10:30:00"
+
+    LandlordSwipeResponse:
+      type: object
+      description: |
+        Response for a landlord's swipe action on a tenant (for a given apartment).
+        `matched`/`matchId` indicate whether this swipe resulted in a mutual match.
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "bb0e8400-e29b-41d4-a716-446655440006"
+        tenantId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        apartmentId:
+          type: string
+          format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+        liked:
+          type: boolean
+          example: true
+        matched:
+          type: boolean
+          nullable: true
+          example: true
+        matchId:
+          type: string
+          format: uuid
+          nullable: true
+          example: "990e8400-e29b-41d4-a716-446655440004"
+        createdAt:
+          type: string
+          format: date-time
+          example: "2024-02-16T10:30:00"
+
+    MatchResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          example: "990e8400-e29b-41d4-a716-446655440004"
+        tenantId:
+          type: string
+          format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        tenantName:
+          type: string
+          example: "Aino Mäkinen"
+        apartmentId:
+          type: string
+          format: uuid
+          example: "770e8400-e29b-41d4-a716-446655440002"
+        apartmentAddress:
+          type: string
+          example: "Fleminginkatu 12, Helsinki"
+        landlordId:
+          type: string
+          format: uuid
+          example: "660e8400-e29b-41d4-a716-446655440001"
+        matchedAt:
           type: string
           format: date-time
           example: "2024-02-16T10:30:00"

@@ -131,3 +131,54 @@ CREATE INDEX IF NOT EXISTS idx_tenant_images_tenant_sort
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_images_one_primary
     ON tenant_images(tenant_id)
     WHERE is_primary = TRUE;
+
+-- Vuokralaisen swipe (tykkäys/pass) asunnosta. Uudelleen-swaippaus päivittää rivin.
+CREATE TABLE IF NOT EXISTS tenant_apartment_swipes (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    apartment_id UUID        NOT NULL REFERENCES apartments(id) ON DELETE CASCADE,
+    liked        BOOLEAN     NOT NULL,
+    created_at   TIMESTAMP   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMP   NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, apartment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_apartment_swipes_tenant
+    ON tenant_apartment_swipes(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tenant_apartment_swipes_apartment
+    ON tenant_apartment_swipes(apartment_id);
+
+-- Vuokranantajan swipe (tykkäys/pass) vuokralaisesta, aina sidottuna tiettyyn
+-- vuokranantajan omistamaan asuntoon. Uudelleen-swaippaus päivittää rivin.
+CREATE TABLE IF NOT EXISTS landlord_tenant_swipes (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    landlord_id  UUID        NOT NULL REFERENCES landlords(id) ON DELETE CASCADE,
+    tenant_id    UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    apartment_id UUID        NOT NULL REFERENCES apartments(id) ON DELETE CASCADE,
+    liked        BOOLEAN     NOT NULL,
+    created_at   TIMESTAMP   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMP   NOT NULL DEFAULT NOW(),
+    UNIQUE (landlord_id, tenant_id, apartment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_landlord_tenant_swipes_landlord
+    ON landlord_tenant_swipes(landlord_id);
+CREATE INDEX IF NOT EXISTS idx_landlord_tenant_swipes_tenant
+    ON landlord_tenant_swipes(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_landlord_tenant_swipes_apartment
+    ON landlord_tenant_swipes(apartment_id);
+
+-- Molemminpuolinen match: sekä vuokralainen että vuokranantaja ovat tykänneet
+-- samasta (tenant, apartment) -yhdistelmästä. Puretaan vain eksplisiittisesti (DELETE).
+CREATE TABLE IF NOT EXISTS matches (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    apartment_id UUID        NOT NULL REFERENCES apartments(id) ON DELETE CASCADE,
+    landlord_id  UUID        NOT NULL REFERENCES landlords(id) ON DELETE CASCADE,
+    matched_at   TIMESTAMP   NOT NULL DEFAULT NOW(),
+    UNIQUE (tenant_id, apartment_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_matches_tenant ON matches(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_matches_apartment ON matches(apartment_id);
+CREATE INDEX IF NOT EXISTS idx_matches_landlord ON matches(landlord_id);
