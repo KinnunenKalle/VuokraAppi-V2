@@ -9,6 +9,7 @@ import {
   Modal,
   ScrollView,
   TouchableOpacity,
+  Image,
 } from 'react-native';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import { Feather } from '@expo/vector-icons';
@@ -16,6 +17,7 @@ import Button from '../../components/common/Button';
 import { Colors, Typography, Spacing, BorderRadius } from '../../theme';
 import { useAuth } from '../../context/AuthContext';
 import userService from '../../services/userService';
+import tenantImageService from '../../services/tenantImageService';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -30,6 +32,19 @@ const avatarColorFor = (id) => {
 const TenantCard = ({ tenant, isTop, depth, onSwiped }) => {
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
+  const [imageIndex, setImageIndex] = useState(0);
+  const images = tenant.images?.length ? tenant.images : null;
+  const currentImageUrl = images ? images[imageIndex]?.url : tenant.imageUrl;
+
+  const showPrevImage = useCallback(() => {
+    if (!images) return;
+    setImageIndex((i) => (i > 0 ? i - 1 : i));
+  }, [images]);
+
+  const showNextImage = useCallback(() => {
+    if (!images) return;
+    setImageIndex((i) => (i < images.length - 1 ? i + 1 : i));
+  }, [images]);
 
   const likeOpacity = useRef(
     translateX.interpolate({ inputRange: [0, SCREEN_WIDTH / 4], outputRange: [0, 1], extrapolate: 'clamp' })
@@ -67,12 +82,44 @@ const TenantCard = ({ tenant, isTop, depth, onSwiped }) => {
       <Animated.View
         style={[styles.card, { zIndex: 10 - depth, transform: [{ translateX }, { translateY }, { rotate }] }]}
       >
-        <View style={[styles.avatarBg, { backgroundColor: avatarColorFor(tenant.id) }]}>
-          <Text style={styles.avatarInitial}>{tenant.firstName?.charAt(0)?.toUpperCase() ?? '?'}</Text>
-        </View>
+        {images ? (
+          <View style={styles.avatarBg}>
+            {images.map((img, i) => (
+              <Image
+                key={img.id}
+                source={{ uri: img.url }}
+                style={[
+                  styles.avatarBg,
+                  { position: 'absolute', top: 0, left: 0, opacity: i === imageIndex ? 1 : 0 },
+                ]}
+                resizeMode="cover"
+              />
+            ))}
+          </View>
+        ) : currentImageUrl ? (
+          <Image source={{ uri: currentImageUrl }} style={styles.avatarBg} resizeMode="cover" />
+        ) : (
+          <View style={[styles.avatarBg, { backgroundColor: avatarColorFor(tenant.id) }]}>
+            <Text style={styles.avatarInitial}>{tenant.firstName?.charAt(0)?.toUpperCase() ?? '?'}</Text>
+          </View>
+        )}
         <View style={styles.gradientOverlay} />
 
         <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}>
+          {isTop && images && images.length > 1 && (
+            <>
+              <View style={styles.imageDots}>
+                {images.map((img, i) => (
+                  <View key={img.id} style={styles.imageDotTrack}>
+                    <View style={[styles.imageDotFill, i === imageIndex && styles.imageDotFillActive]} />
+                  </View>
+                ))}
+              </View>
+              <TouchableOpacity style={styles.tapZoneLeft} activeOpacity={1} onPress={showPrevImage} />
+              <TouchableOpacity style={styles.tapZoneRight} activeOpacity={1} onPress={showNextImage} />
+            </>
+          )}
+
           {isTop && (
             <>
               <Animated.View style={[styles.swipeOverlay, { opacity: nopeOpacity, transform: [{ rotate: '-30deg' }] }]}>
@@ -125,12 +172,44 @@ const TenantCard = ({ tenant, isTop, depth, onSwiped }) => {
 };
 
 const TenantDetailModal = ({ tenant, onClose }) => {
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const images = tenant?.images ?? [];
+
   if (!tenant) return null;
+
+  const onGalleryScroll = (e) => {
+    const idx = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+    setGalleryIndex(idx);
+  };
+
   return (
     <Modal visible={!!tenant} animationType="slide" onRequestClose={onClose}>
       <ScrollView style={styles.detailContainer} bounces={false}>
-        <View style={[styles.gallery, { backgroundColor: avatarColorFor(tenant.id) }]}>
-          <Text style={styles.avatarInitialLarge}>{tenant.firstName?.charAt(0)?.toUpperCase() ?? '?'}</Text>
+        <View style={[styles.gallery, images.length === 0 && { backgroundColor: avatarColorFor(tenant.id) }]}>
+          {images.length > 0 ? (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onScroll={onGalleryScroll}
+              scrollEventThrottle={16}
+            >
+              {images.map((img) => (
+                <Image key={img.id} source={{ uri: img.url }} style={styles.galleryImage} resizeMode="cover" />
+              ))}
+            </ScrollView>
+          ) : (
+            <Text style={styles.avatarInitialLarge}>{tenant.firstName?.charAt(0)?.toUpperCase() ?? '?'}</Text>
+          )}
+
+          {images.length > 1 && (
+            <View style={styles.galleryDots}>
+              {images.map((img, i) => (
+                <View key={img.id} style={[styles.galleryDot, i === galleryIndex && styles.galleryDotActive]} />
+              ))}
+            </View>
+          )}
+
           <TouchableOpacity style={styles.closeButton} onPress={onClose} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
             <Feather name="x" size={24} color="#ffffff" />
           </TouchableOpacity>
@@ -204,7 +283,26 @@ const BrowseTenantsScreen = () => {
       }
       try {
         const data = await userService.searchTenants(user.id, {});
-        setTenants(data ?? []);
+        const withImages = await Promise.all(
+          (data ?? []).map(async (tenant) => {
+            try {
+              const imgs = await tenantImageService.getImages(tenant.id);
+              const sorted = [...imgs].sort((a, b) => a.sortOrder - b.sortOrder);
+              const primary = sorted.find((i) => i.isPrimary) || sorted[0];
+              return { ...tenant, images: sorted, imageUrl: primary?.url ?? null };
+            } catch {
+              return { ...tenant, images: [], imageUrl: null };
+            }
+          })
+        );
+
+        withImages.forEach((tenant) => {
+          (tenant.images ?? []).forEach((img) => {
+            if (img.url) Image.prefetch(img.url).catch(() => {});
+          });
+        });
+
+        setTenants(withImages);
       } catch (e) {
         setError(e.userMessage ?? e.message);
       } finally {
@@ -282,8 +380,6 @@ const BrowseTenantsScreen = () => {
             Kiinnostaa
           </Button>
         </View>
-
-        <Text style={styles.counter}>{currentIndex + 1} / {tenants.length}</Text>
       </View>
 
       <TenantDetailModal tenant={detailTenant} onClose={() => setDetailTenant(null)} />
@@ -320,6 +416,47 @@ const styles = StyleSheet.create({
     fontSize: 100,
     fontWeight: Typography.weight.bold,
     color: 'rgba(255,255,255,0.5)',
+  },
+
+  tapZoneLeft: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    width: '35%',
+    zIndex: 15,
+  },
+  tapZoneRight: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    right: 0,
+    width: '35%',
+    zIndex: 15,
+  },
+  imageDots: {
+    position: 'absolute',
+    top: Spacing.xl + 28,
+    left: Spacing.md,
+    right: Spacing.md,
+    flexDirection: 'row',
+    gap: 4,
+    zIndex: 16,
+  },
+  imageDotTrack: {
+    flex: 1,
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.35)',
+    overflow: 'hidden',
+  },
+  imageDotFill: {
+    height: '100%',
+    width: 0,
+    backgroundColor: '#ffffff',
+  },
+  imageDotFillActive: {
+    width: '100%',
   },
 
   gradientOverlay: {
@@ -452,17 +589,6 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
 
-  counter: {
-    position: 'absolute',
-    bottom: 85,
-    alignSelf: 'center',
-    fontSize: Typography.size.sm,
-    color: '#ffffff',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-    zIndex: 20,
-  },
 
   emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: Spacing.xl },
   emptyTitle: {
@@ -481,6 +607,29 @@ const styles = StyleSheet.create({
     height: SCREEN_HEIGHT * 0.4,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  galleryImage: {
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT * 0.4,
+  },
+  galleryDots: {
+    position: 'absolute',
+    bottom: Spacing.md,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  galleryDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(255,255,255,0.5)',
+  },
+  galleryDotActive: {
+    backgroundColor: '#ffffff',
+    width: 18,
   },
   closeButton: {
     position: 'absolute',

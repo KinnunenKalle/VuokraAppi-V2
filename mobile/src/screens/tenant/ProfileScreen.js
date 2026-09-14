@@ -8,10 +8,12 @@ import {
   TouchableOpacity,
   Alert,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import * as WebBrowser from 'expo-web-browser';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from '@react-navigation/native';
 import Button from '../../components/common/Button';
 import { useAuth } from '../../context/AuthContext';
@@ -19,6 +21,37 @@ import { STORAGE_KEYS } from '../../constants';
 import { Colors, Typography, Spacing, BorderRadius } from '../../theme';
 import userService from '../../services/userService';
 import identityService from '../../services/identityService';
+import tenantImageService from '../../services/tenantImageService';
+
+// ---------------------------------------------------------------------------
+// Kuvakomponentti yksittäiselle kuvalle
+// ---------------------------------------------------------------------------
+const ImageTile = ({ image, onDelete, onSetPrimary, uploading }) => (
+  <View style={styles.imageTile}>
+    <Image source={{ uri: image.uri ?? image.url }} style={styles.tileImg} />
+    {image.isPrimary && (
+      <View style={styles.primaryBadge}>
+        <Feather name="star" size={10} color="#fff" />
+      </View>
+    )}
+    {uploading ? (
+      <View style={styles.tileOverlay}>
+        <ActivityIndicator size="small" color="#fff" />
+      </View>
+    ) : (
+      <View style={styles.tileActions}>
+        {!image.isPrimary && image.id && (
+          <TouchableOpacity style={styles.tileBtn} onPress={() => onSetPrimary(image)}>
+            <Feather name="star" size={14} color="#fff" />
+          </TouchableOpacity>
+        )}
+        <TouchableOpacity style={[styles.tileBtn, styles.tileBtnDelete]} onPress={() => onDelete(image)}>
+          <Feather name="x" size={14} color="#fff" />
+        </TouchableOpacity>
+      </View>
+    )}
+  </View>
+);
  
 /**
  * Profile Screen - Profiili ja asetukset
@@ -30,9 +63,92 @@ const ProfileScreen = ({ navigation }) => {
   const [verifying, setVerifying] = useState(false);
   const [checkingStatus, setCheckingStatus] = useState(false);
 
+  // Kuvat: { id?, uri, url?, isPrimary?, uploading? }
+  const [images, setImages] = useState([]);
+
   useEffect(() => {
     loadProfile();
   }, [profile]);
+
+  const loadImages = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const imgs = await tenantImageService.getImages(user.id);
+      setImages(imgs.map((img) => ({ ...img, uri: img.url })));
+    } catch (error) {
+      console.error('Error loading tenant images:', error);
+    }
+  }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadImages();
+    }, [loadImages])
+  );
+
+  const pickImages = useCallback(async () => {
+    if (!user?.id) return;
+
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Lupa puuttuu', 'Salli kuvagallerian käyttö asetuksista.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      quality: 0.8,
+      selectionLimit: 5,
+    });
+
+    if (result.canceled) return;
+
+    for (const asset of result.assets) {
+      const tempId = `temp_${Date.now()}_${Math.random()}`;
+      setImages((prev) => [...prev, { tempId, uri: asset.uri, uploading: true }]);
+      try {
+        const uploaded = await tenantImageService.uploadImage(user.id, asset);
+        setImages((prev) =>
+          prev.map((img) => (img.tempId === tempId ? { ...uploaded, uri: uploaded.url } : img))
+        );
+      } catch (e) {
+        setImages((prev) => prev.filter((img) => img.tempId !== tempId));
+        Alert.alert('Kuvat ei saatavilla', e.userMessage ?? 'Kuvan lataus epäonnistui.');
+      }
+    }
+  }, [user?.id]);
+
+  const handleDeleteImage = useCallback((image) => {
+    if (!image.id) {
+      setImages((prev) => prev.filter((img) => img !== image));
+      return;
+    }
+    Alert.alert('Poista kuva', 'Haluatko varmasti poistaa tämän kuvan?', [
+      { text: 'Peruuta', style: 'cancel' },
+      {
+        text: 'Poista',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await tenantImageService.deleteImage(user.id, image.id);
+            setImages((prev) => prev.filter((img) => img.id !== image.id));
+          } catch (e) {
+            Alert.alert('Virhe', e.userMessage ?? 'Poisto epäonnistui.');
+          }
+        },
+      },
+    ]);
+  }, [user?.id]);
+
+  const handleSetPrimary = useCallback(async (image) => {
+    try {
+      await tenantImageService.setPrimaryImage(user.id, image.id);
+      setImages((prev) => prev.map((img) => ({ ...img, isPrimary: img.id === image.id })));
+    } catch (e) {
+      Alert.alert('Virhe', e.userMessage ?? 'Asetus epäonnistui.');
+    }
+  }, [user?.id]);
 
   const refreshVerificationStatus = useCallback(async () => {
     if (!user?.id) return;
@@ -198,6 +314,31 @@ const ProfileScreen = ({ navigation }) => {
           {userProfile?.bio && (
             <Text style={styles.bio}>"{userProfile.bio}"</Text>
           )}
+        </View>
+
+        {/* Profiilikuvat */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Kuvat</Text>
+          <View style={styles.imageGrid}>
+            {images.map((img, idx) => (
+              <ImageTile
+                key={img.id ?? img.tempId ?? idx}
+                image={img}
+                uploading={img.uploading}
+                onDelete={handleDeleteImage}
+                onSetPrimary={handleSetPrimary}
+              />
+            ))}
+            {images.length < 5 && (
+              <TouchableOpacity style={styles.addImageTile} onPress={pickImages}>
+                <Feather name="plus" size={28} color={Colors.primary.main} />
+                <Text style={styles.addImageText}>Lisää kuva</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          <Text style={styles.imageHint}>
+            Paina ★ asettaaksesi profiilikuvan. Max 5 kuvaa (JPEG, PNG, WebP).
+          </Text>
         </View>
 
         {/* Vahva tunnistautuminen */}
@@ -481,6 +622,75 @@ const styles = StyleSheet.create({
  
   signOutButton: {
     marginTop: Spacing.md,
+  },
+
+  // Kuvat
+  imageGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: Spacing.sm,
+  },
+  imageTile: {
+    width: 90,
+    height: 90,
+    borderRadius: 8,
+    overflow: 'hidden',
+    backgroundColor: Colors.border ?? '#E5E7EB',
+  },
+  tileImg: {
+    width: 90,
+    height: 90,
+  },
+  primaryBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: Colors.primary.main,
+    borderRadius: 10,
+    padding: 3,
+  },
+  tileOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tileActions: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    flexDirection: 'row',
+    gap: 4,
+  },
+  tileBtn: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderRadius: 12,
+    padding: 4,
+  },
+  tileBtnDelete: {
+    backgroundColor: 'rgba(220,38,38,0.75)',
+  },
+  addImageTile: {
+    width: 90,
+    height: 90,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: Colors.primary.main + '50',
+    borderStyle: 'dashed',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  addImageText: {
+    fontSize: Typography.size.xs,
+    color: Colors.primary.main,
+    fontWeight: Typography.weight.semibold,
+    textAlign: 'center',
+  },
+  imageHint: {
+    fontSize: Typography.size.xs,
+    color: Colors.text.muted,
+    marginTop: Spacing.sm,
   },
 
   verifyCard: {

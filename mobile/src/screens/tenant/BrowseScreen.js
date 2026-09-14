@@ -415,10 +415,6 @@ const BrowseScreen = () => {
             Kiinnostaa
           </Button>
         </View>
-
-        <Text style={styles.counter}>
-          {currentIndex + 1} / {apartments.length}
-        </Text>
       </View>
 
       <ApartmentDetailModal apartment={detailApartment} onClose={() => setDetailApartment(null)} />
@@ -609,17 +605,6 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
 
-  counter: {
-    position: 'absolute',
-    bottom: 85,
-    alignSelf: 'center',
-    fontSize: Typography.size.sm,
-    color: '#ffffff',
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 3,
-    zIndex: 20,
-  },
 
   emptyContainer: {
     flex: 1,
